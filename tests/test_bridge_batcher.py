@@ -227,6 +227,43 @@ def test_batcher_persists_frozen_batch_status_and_payload(tmp_path) -> None:
     assert payload["message_count"] == 1
 
 
+def test_batcher_reconstructs_pending_frozen_batches_after_restart(tmp_path) -> None:
+    store = BridgeStore(tmp_path / "bridge.sqlite3")
+    first = ConversationBatcher(store)
+    message = _message("alice", "hello")
+    first.add_messages("alice", (message,), now=10.0)
+    frozen = first.freeze_due_batches(now=11.5)
+
+    restarted = ConversationBatcher(store)
+    pending = restarted.frozen_batches()
+
+    assert len(pending) == 1
+    assert pending[0].batch_id == frozen[0].batch_id
+    assert pending[0].status == "frozen"
+    assert pending[0].frozen_at == 11.5
+    assert pending[0].messages[0].message_key == message.message_key
+
+
+def test_batcher_frozen_batches_limit_keeps_extra_rows_frozen(tmp_path) -> None:
+    store = BridgeStore(tmp_path / "bridge.sqlite3")
+    for chat_name, content in (("alice", "hello"), ("bob", "hi")):
+        store.save_batch(
+            ConversationBatch(
+                batch_id=f"batch-{chat_name}",
+                chat_name=chat_name,
+                messages=(_message(chat_name, content),),
+                created_at=10.0,
+                frozen_at=11.5,
+                status="frozen",
+            )
+        )
+
+    pending = ConversationBatcher(store).frozen_batches(limit=1)
+
+    assert len(pending) == 1
+    assert len(store.list_batches(status="frozen")) == 2
+
+
 def test_batcher_recovers_seen_open_batch_and_freezes_after_restart(tmp_path) -> None:
     store = BridgeStore(tmp_path / "bridge.sqlite3")
     message = _message("alice", "hello")

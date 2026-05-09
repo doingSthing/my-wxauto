@@ -107,6 +107,14 @@ class ConversationBatcher:
             del self._open[chat_name]
         return tuple(frozen)
 
+    def frozen_batches(self, *, limit: int | None = None) -> tuple[ConversationBatch, ...]:
+        if limit is not None and limit <= 0:
+            return ()
+        rows = self.store.list_batches(status="frozen")
+        if limit is not None:
+            rows = rows[:limit]
+        return tuple(self._batch_from_row(row) for row in rows)
+
     def _is_due(self, batch: _OpenBatch, *, now: float) -> bool:
         if batch.message_count >= self.config.max_batch_messages:
             return True
@@ -151,6 +159,20 @@ class ConversationBatcher:
             )
         return open_batches
 
+    def _batch_from_row(self, row: dict[str, Any]) -> ConversationBatch:
+        payload = json.loads(row["payload_json"])
+        messages = tuple(self._message_from_payload(message) for message in payload.get("messages", ()))
+        return ConversationBatch(
+            batch_id=str(payload.get("batch_id") or row["batch_id"]),
+            chat_name=str(payload.get("chat_name") or row["chat_name"]),
+            messages=messages,
+            created_at=float(payload.get("created_at") or row["created_at"]),
+            frozen_at=_optional_float(payload.get("frozen_at"), row.get("frozen_at")),
+            submitted_at=_optional_float(payload.get("submitted_at"), row.get("submitted_at")),
+            completed_at=_optional_float(payload.get("completed_at"), row.get("completed_at")),
+            status=str(payload.get("status") or row["status"]),
+        )
+
     def _message_from_payload(self, payload: dict[str, Any]) -> BridgeMessage:
         return BridgeMessage(
             chat_name=str(payload.get("chat_name") or ""),
@@ -183,4 +205,15 @@ def _optional_bool(value: object) -> bool | None:
             return True
         if lowered in {"false", "0", "no"}:
             return False
+    return None
+
+
+def _optional_float(*values: object) -> float | None:
+    for value in values:
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
     return None

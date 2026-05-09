@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from my_wxauto.bridge_store import BridgeStore
 from my_wxauto.wechat import SearchOptions, WeChat
 from my_wxauto.window import WeChatWindow, WindowRect
 from my_wxauto.wxauto4_backend import Wxauto4Backend, Wxauto4CallResult
@@ -221,13 +222,14 @@ def test_chatwith_uses_normal_click_after_tray_restore() -> None:
     ]
 
 
-def test_sendmsg_opens_chat_pastes_message_and_presses_enter() -> None:
+def test_sendmsg_opens_chat_pastes_message_and_presses_enter(tmp_path) -> None:
     windows = FakeWindowController()
     keyboard = FakeKeyboard()
     wx = WeChat(
         window_controller=windows,
         keyboard=keyboard,
         search_options=SearchOptions(result_wait=0, chat_open_wait=0),
+        bridge_store_path=tmp_path / "bridge.sqlite3",
     )
 
     result = wx.SendMsg(" 你好，今天开会吗？ ", " 张三 ")
@@ -247,12 +249,13 @@ def test_sendmsg_opens_chat_pastes_message_and_presses_enter() -> None:
     ]
 
 
-def test_send_message_alias_uses_who_then_message() -> None:
+def test_send_message_alias_uses_who_then_message(tmp_path) -> None:
     keyboard = FakeKeyboard()
     wx = WeChat(
         window_controller=FakeWindowController(),
         keyboard=keyboard,
         search_options=SearchOptions(result_wait=0, chat_open_wait=0),
+        bridge_store_path=tmp_path / "bridge.sqlite3",
     )
 
     result = wx.send_message("文件传输助手", "测试消息")
@@ -260,6 +263,36 @@ def test_send_message_alias_uses_who_then_message() -> None:
     assert result
     assert result.data["who"] == "文件传输助手"
     assert result.data["message"] == "测试消息"
+
+
+def test_sendmsg_records_outgoing_echo_in_custom_bridge_store(tmp_path) -> None:
+    store_path = tmp_path / "bridge.sqlite3"
+    wx = WeChat(
+        window_controller=FakeWindowController(),
+        keyboard=FakeKeyboard(),
+        search_options=SearchOptions(result_wait=0, chat_open_wait=0),
+        bridge_store_path=store_path,
+    )
+
+    result = wx.SendMsg(" hello ", " alice ")
+
+    assert result
+    assert BridgeStore(store_path).matches_outgoing_echo("alice", "hello")
+
+
+def test_send_message_alias_records_outgoing_echo(tmp_path) -> None:
+    store_path = tmp_path / "bridge.sqlite3"
+    wx = WeChat(
+        window_controller=FakeWindowController(),
+        keyboard=FakeKeyboard(),
+        search_options=SearchOptions(result_wait=0, chat_open_wait=0),
+        bridge_store_path=store_path,
+    )
+
+    result = wx.send_message("alice", "hello")
+
+    assert result
+    assert BridgeStore(store_path).matches_outgoing_echo("alice", "hello")
 
 
 def test_sendmsg_rejects_empty_message() -> None:

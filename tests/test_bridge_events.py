@@ -55,6 +55,75 @@ def test_messages_from_chat_payload_adds_keys_and_occurrence_indexes() -> None:
     assert messages[0].to_dict()["chat_name"] == "alice"
 
 
+def test_messages_from_chat_payload_key_ignores_unrelated_preceding_message() -> None:
+    without_preceding = messages_from_chat_payload(
+        {
+            "chat_name": "alice",
+            "messages": [
+                {
+                    "content": "target",
+                    "message_type": "text",
+                    "sender": "alice",
+                    "is_self": False,
+                    "time_text": "15:41",
+                },
+            ],
+        }
+    )
+    with_preceding = messages_from_chat_payload(
+        {
+            "chat_name": "alice",
+            "messages": [
+                {
+                    "content": "unrelated",
+                    "message_type": "text",
+                    "sender": "alice",
+                    "is_self": False,
+                    "time_text": "15:40",
+                },
+                {
+                    "content": "target",
+                    "message_type": "text",
+                    "sender": "alice",
+                    "is_self": False,
+                    "time_text": "15:41",
+                },
+            ],
+        }
+    )
+
+    assert without_preceding[0].occurrence_index == 0
+    assert with_preceding[1].occurrence_index == 0
+    assert without_preceding[0].message_key == with_preceding[1].message_key
+
+
+def test_messages_from_chat_payload_distinguishes_identical_repeated_messages() -> None:
+    messages = messages_from_chat_payload(
+        {
+            "chat_name": "alice",
+            "messages": [
+                {
+                    "content": "same",
+                    "message_type": "text",
+                    "sender": "alice",
+                    "is_self": False,
+                    "time_text": "15:41",
+                },
+                {
+                    "content": "same",
+                    "message_type": "text",
+                    "sender": "alice",
+                    "is_self": False,
+                    "time_text": "15:41",
+                },
+            ],
+        }
+    )
+
+    assert [message.occurrence_index for message in messages] == [0, 1]
+    assert messages[0].message_key != messages[1].message_key
+
+
 def test_messages_from_chat_payload_skips_invalid_entries_and_preserves_raw() -> None:
     raw_payload = {"raw_name": "fallback", "message_type": "image", "sender": "alice"}
     messages = messages_from_chat_payload(

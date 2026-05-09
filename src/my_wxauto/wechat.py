@@ -4,8 +4,10 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Sequence
 
+from .bridge_store import BridgeStore
 from .debug_trace import make_ui_tracer
 from .keyboard import KeyboardController
 from .response import WxResponse
@@ -44,6 +46,7 @@ class WeChat:
         debug: bool = False,
         trace_ui: bool = False,
         prefer_wxauto4: bool = True,
+        bridge_store_path: str | Path = ".my_wxauto_bridge.sqlite3",
         **_ignored_compat_kwargs: object,
     ) -> None:
         self.window_controller = window_controller
@@ -52,6 +55,7 @@ class WeChat:
         self.debug = debug
         self.trace = make_ui_tracer(trace_ui)
         self.prefer_wxauto4 = prefer_wxauto4 and window_controller is None and keyboard is None
+        self.bridge_store_path = bridge_store_path
         self._avatar_cleanup_lock = threading.Lock()
         self._wxauto4_avatar_cleanup_done = False
         self._wxauto4_backend = (
@@ -130,6 +134,7 @@ class WeChat:
                 restore_clipboard=self.search_options.restore_clipboard,
             )
             keyboard.press("enter")
+            self._record_outgoing_echo(target, content)
             return WxResponse.success(
                 f"已尝试向 {target} 发送消息。",
                 {
@@ -551,3 +556,9 @@ class WeChat:
         if isinstance(value, (str, int, float, bool, list, tuple, dict)):
             return value
         return repr(value)
+
+    def _record_outgoing_echo(self, target: str, content: str) -> None:
+        try:
+            BridgeStore(self.bridge_store_path).record_outgoing_echo(target, content, sent_at=time.time())
+        except Exception:
+            LOGGER.debug("Unable to record outgoing echo.", exc_info=True)

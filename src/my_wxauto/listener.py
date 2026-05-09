@@ -183,7 +183,8 @@ def listen_conversation_batches(
         window_seconds=window_seconds,
         cooldown_seconds=cooldown_seconds,
     )
-    batcher = ConversationBatcher(BridgeStore(store_path), config=batching_config)
+    store = BridgeStore(store_path)
+    batcher = ConversationBatcher(store, config=batching_config)
     started = time.perf_counter()
     deadline = None if seconds <= 0 else time.monotonic() + seconds
     flash_count = 0
@@ -196,8 +197,21 @@ def listen_conversation_batches(
         remaining = None if max_events <= 0 else max_events - event_count
         if remaining is not None and remaining <= 0:
             return
+
+        for batch in batcher.frozen_batches(limit=remaining):
+            callback(batch)
+            store.mark_batch_submitted(batch.batch_id, submitted_at=time.time())
+            event_count += 1
+            if max_events > 0 and event_count >= max_events:
+                stopped_reason = "max_events"
+                stop_requested = True
+                return
+        remaining = None if max_events <= 0 else max_events - event_count
+        if remaining is not None and remaining <= 0:
+            return
         for batch in batcher.freeze_due_batches(now=now, limit=remaining):
             callback(batch)
+            store.mark_batch_submitted(batch.batch_id, submitted_at=time.time())
             event_count += 1
             if max_events > 0 and event_count >= max_events:
                 stopped_reason = "max_events"
@@ -208,7 +222,7 @@ def listen_conversation_batches(
         chat_name = str(chat.get("chat_name") or "")
         if not chat_name or not chat.get("messages"):
             return
-        now = time.monotonic()
+        now = time.time()
         messages = messages_from_chat_payload(chat)
         if not messages:
             return
@@ -234,12 +248,12 @@ def listen_conversation_batches(
             if max_probes > 0 and flash_count >= max_probes:
                 stopped_reason = "max_probes"
                 break
-        emit_due(time.monotonic())
+        emit_due(time.time())
         if stop_requested:
             return _stats(started, flash_count, event_count, stopped_reason)
         time.sleep(interval)
 
-    emit_due(time.monotonic())
+    emit_due(time.time())
     return _stats(started, flash_count, event_count, stopped_reason)
 
 
