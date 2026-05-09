@@ -247,3 +247,63 @@ def test_listen_conversation_batches_max_probes_can_collect_without_immediate_em
     assert stats.stopped_reason == "max_probes"
     assert emitted == []
     assert len(BridgeStore(store_path).list_batches(status="open")) == 1
+
+
+def test_listen_conversation_batches_flushes_due_batch_on_interval_tick(monkeypatch, tmp_path) -> None:
+    emitted = []
+    monotonic_values = iter([0.0, 0.0, 0.0, 0.5, 1.1, 1.1])
+
+    def fake_monotonic() -> float:
+        return next(monotonic_values, 1.1)
+
+    def fake_icons() -> list[dict[str, object]]:
+        return [{"image_sha1": "changed"}]
+
+    class FakeDetector:
+        def __init__(self, **_kwargs: object) -> None:
+            self.calls = 0
+
+        def observe(self, _now: float, _signature: object) -> dict[str, object] | None:
+            self.calls += 1
+            return {"change_count": 1} if self.calls == 1 else None
+
+    def fake_probe(**kwargs: object) -> dict[str, object]:
+        kwargs["on_chat_opened"](
+            {
+                "chat_name": "alice",
+                "source": "unread_session",
+                "messages": [
+                    {
+                        "content": "hello",
+                        "message_type": "text",
+                        "sender": "alice",
+                        "is_self": False,
+                        "time_text": "15:41",
+                    }
+                ],
+            }
+        )
+        assert emitted == []
+        return {"status": "ok", "opened_unread_chats": []}
+
+    monkeypatch.setattr(listener.probes, "_ensure_windows", lambda: None)
+    monkeypatch.setattr(listener.probes, "TaskbarFlashDetector", FakeDetector)
+    monkeypatch.setattr(listener.probes, "inspect_wechat_taskbar_icons", fake_icons)
+    monkeypatch.setattr(listener.probes, "_probe_sessions_after_wakeup_with_timeout", fake_probe)
+    monkeypatch.setattr(listener.probes, "_taskbar_signature", lambda icons: tuple(item["image_sha1"] for item in icons))
+    monkeypatch.setattr(listener.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(listener.time, "sleep", lambda _seconds: None)
+
+    stats = listen_conversation_batches(
+        emitted.append,
+        seconds=0,
+        interval=0.01,
+        min_changes=1,
+        max_events=1,
+        store_path=tmp_path / "bridge.sqlite3",
+        batching_config=BatchingConfig(quiet_window_seconds=1.0, max_batch_wait_seconds=8.0, max_batch_messages=10),
+    )
+
+    assert stats.event_count == 1
+    assert stats.stopped_reason == "max_events"
+    assert [batch.chat_name for batch in emitted] == ["alice"]

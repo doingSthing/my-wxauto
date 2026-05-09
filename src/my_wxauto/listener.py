@@ -234,6 +234,9 @@ def listen_conversation_batches(
             if max_probes > 0 and flash_count >= max_probes:
                 stopped_reason = "max_probes"
                 break
+        emit_due(time.monotonic())
+        if stop_requested:
+            return _stats(started, flash_count, event_count, stopped_reason)
         time.sleep(interval)
 
     emit_due(time.monotonic())
