@@ -4,6 +4,8 @@ import hashlib
 import json
 import sqlite3
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +23,7 @@ class BridgeStore:
         keyed = message.with_key()
         timestamp = _now(now)
         payload = json.dumps(keyed.to_dict(), ensure_ascii=False, sort_keys=True)
-        with self._connect() as conn:
+        with self._connection() as conn:
             try:
                 conn.execute(
                     """
@@ -39,7 +41,7 @@ class BridgeStore:
                 return False
 
     def is_seen(self, message_key: str) -> bool:
-        with self._connect() as conn:
+        with self._connection() as conn:
             row = conn.execute(
                 "select 1 from seen_messages where message_key = ?",
                 (message_key,),
@@ -48,7 +50,7 @@ class BridgeStore:
 
     def save_batch(self, batch: ConversationBatch) -> None:
         payload = json.dumps(batch.to_event_dict(), ensure_ascii=False, sort_keys=True)
-        with self._connect() as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 insert or replace into conversation_batches(
@@ -72,22 +74,42 @@ class BridgeStore:
 
     def mark_batch_submitted(self, batch_id: str, *, submitted_at: float | None = None) -> None:
         timestamp = _now(submitted_at)
-        with self._connect() as conn:
+        with self._connection() as conn:
+            payload = self._updated_batch_payload(
+                conn,
+                batch_id,
+                status="submitted",
+                submitted_at=timestamp,
+            )
             conn.execute(
-                "update conversation_batches set status = ?, submitted_at = ? where batch_id = ?",
-                ("submitted", timestamp, batch_id),
+                """
+                update conversation_batches
+                set status = ?, submitted_at = ?, payload_json = ?
+                where batch_id = ?
+                """,
+                ("submitted", timestamp, payload, batch_id),
             )
 
     def mark_batch_completed(self, batch_id: str, *, completed_at: float | None = None) -> None:
         timestamp = _now(completed_at)
-        with self._connect() as conn:
+        with self._connection() as conn:
+            payload = self._updated_batch_payload(
+                conn,
+                batch_id,
+                status="completed",
+                completed_at=timestamp,
+            )
             conn.execute(
-                "update conversation_batches set status = ?, completed_at = ? where batch_id = ?",
-                ("completed", timestamp, batch_id),
+                """
+                update conversation_batches
+                set status = ?, completed_at = ?, payload_json = ?
+                where batch_id = ?
+                """,
+                ("completed", timestamp, payload, batch_id),
             )
 
     def get_batch(self, batch_id: str) -> dict[str, Any] | None:
-        with self._connect() as conn:
+        with self._connection() as conn:
             row = conn.execute(
                 """
                 select batch_id, chat_name, status, created_at, frozen_at,
@@ -109,7 +131,7 @@ class BridgeStore:
     ) -> str:
         timestamp = _now(sent_at)
         echo_key = _echo_key(chat_name, content)
-        with self._connect() as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 insert or replace into outgoing_echoes(echo_key, chat_name, content, sent_at, expires_at)
@@ -122,11 +144,11 @@ class BridgeStore:
     def matches_outgoing_echo(self, chat_name: str, content: str, *, now: float | None = None) -> bool:
         timestamp = _now(now)
         self.prune_expired_echoes(now=timestamp)
-        with self._connect() as conn:
+        with self._connection() as conn:
             row = conn.execute(
                 """
                 select 1 from outgoing_echoes
-                where echo_key = ? and expires_at >= ?
+                where echo_key = ? and expires_at > ?
                 """,
                 (_echo_key(chat_name, content), timestamp),
             ).fetchone()
@@ -134,20 +156,28 @@ class BridgeStore:
 
     def prune_expired_echoes(self, *, now: float | None = None) -> int:
         timestamp = _now(now)
-        with self._connect() as conn:
+        with self._connection() as conn:
             cursor = conn.execute(
-                "delete from outgoing_echoes where expires_at < ?",
+                "delete from outgoing_echoes where expires_at <= ?",
                 (timestamp,),
             )
             return int(cursor.rowcount or 0)
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.path)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def _init_schema(self) -> None:
-        with self._connect() as conn:
+        with self._connection() as conn:
             conn.executescript(
                 """
                 create table if not exists seen_messages (
@@ -179,6 +209,34 @@ class BridgeStore:
                 );
                 """
             )
+
+    def _updated_batch_payload(
+        self,
+        conn: sqlite3.Connection,
+        batch_id: str,
+        *,
+        status: str,
+        submitted_at: float | None = None,
+        completed_at: float | None = None,
+    ) -> str:
+        row = conn.execute(
+            """
+            select payload_json
+            from conversation_batches
+            where batch_id = ?
+            """,
+            (batch_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"conversation batch not found: {batch_id}")
+
+        payload = json.loads(row["payload_json"])
+        payload["status"] = status
+        if submitted_at is not None:
+            payload["submitted_at"] = submitted_at
+        if completed_at is not None:
+            payload["completed_at"] = completed_at
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
 
 def _echo_key(chat_name: str, content: str) -> str:
