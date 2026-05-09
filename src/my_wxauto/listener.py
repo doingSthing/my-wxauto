@@ -166,7 +166,16 @@ def listen_conversation_batches(
     store_path: str | Path = ".my_wxauto_bridge.sqlite3",
     batching_config: BatchingConfig | None = None,
 ) -> ListenerStats:
-    """Listen for unread chats and emit frozen conversation batches."""
+    """Listen for unread chats and synchronously deliver frozen batches.
+
+    The callback is a synchronous delivery hook. Production Hermes/model work
+    should enqueue quickly inside the callback and return; this low-level
+    listener intentionally does not own a model execution thread.
+
+    With the default quiet window, max_probes may collect messages without
+    emitting immediately. Callers that need immediate delivery can use a
+    shorter quiet window or let a later loop iteration flush due batches.
+    """
 
     probes._ensure_windows()
     detector = probes.TaskbarFlashDetector(
@@ -184,9 +193,10 @@ def listen_conversation_batches(
 
     def emit_due(now: float) -> None:
         nonlocal event_count, stopped_reason, stop_requested
-        if stop_requested:
+        remaining = None if max_events <= 0 else max_events - event_count
+        if remaining is not None and remaining <= 0:
             return
-        for batch in batcher.freeze_due_batches(now=now):
+        for batch in batcher.freeze_due_batches(now=now, limit=remaining):
             callback(batch)
             event_count += 1
             if max_events > 0 and event_count >= max_events:
@@ -195,8 +205,6 @@ def listen_conversation_batches(
                 return
 
     def on_chat_opened(chat: dict[str, Any]) -> None:
-        if stop_requested:
-            return
         chat_name = str(chat.get("chat_name") or "")
         if not chat_name or not chat.get("messages"):
             return

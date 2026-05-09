@@ -92,9 +92,13 @@ class ConversationBatcher:
     def open_batch_for(self, chat_name: str) -> _OpenBatch | None:
         return self._open.get(chat_name)
 
-    def freeze_due_batches(self, *, now: float) -> tuple[ConversationBatch, ...]:
+    def freeze_due_batches(self, *, now: float, limit: int | None = None) -> tuple[ConversationBatch, ...]:
+        if limit is not None and limit <= 0:
+            return ()
         frozen: list[ConversationBatch] = []
         for chat_name, batch in list(self._open.items()):
+            if limit is not None and len(frozen) >= limit:
+                break
             if not self._is_due(batch, now=now):
                 continue
             event = self._to_event(batch, frozen_at=now, status="frozen")

@@ -110,6 +110,36 @@ def test_batcher_freezes_by_quiet_window(tmp_path) -> None:
     assert batcher.open_batch_for("alice") is None
 
 
+def test_batcher_freeze_due_batches_limit_keeps_remaining_batches_open(tmp_path) -> None:
+    config = BatchingConfig(quiet_window_seconds=1.5, max_batch_wait_seconds=8.0, max_batch_messages=10)
+    store = BridgeStore(tmp_path / "bridge.sqlite3")
+    batcher = ConversationBatcher(store, config=config)
+
+    batcher.add_messages("alice", (_message("alice", "hello"),), now=10.0)
+    batcher.add_messages("bob", (_message("bob", "hi"),), now=10.0)
+
+    frozen = batcher.freeze_due_batches(now=11.6, limit=1)
+
+    assert len(frozen) == 1
+    assert batcher.open_batch_for(frozen[0].chat_name) is None
+    open_rows = store.list_batches(status="open")
+    assert len(open_rows) == 1
+    assert open_rows[0]["chat_name"] in {"alice", "bob"} - {frozen[0].chat_name}
+    assert batcher.open_batch_for(open_rows[0]["chat_name"]) is not None
+
+
+def test_batcher_freeze_due_batches_limit_zero_freezes_nothing(tmp_path) -> None:
+    config = BatchingConfig(quiet_window_seconds=1.5, max_batch_wait_seconds=8.0, max_batch_messages=10)
+    store = BridgeStore(tmp_path / "bridge.sqlite3")
+    batcher = ConversationBatcher(store, config=config)
+
+    batcher.add_messages("alice", (_message("alice", "hello"),), now=10.0)
+
+    assert batcher.freeze_due_batches(now=11.6, limit=0) == ()
+    assert len(store.list_batches(status="open")) == 1
+    assert batcher.open_batch_for("alice") is not None
+
+
 def test_batcher_freezes_at_exact_quiet_window_boundary(tmp_path) -> None:
     config = BatchingConfig(quiet_window_seconds=1.5, max_batch_wait_seconds=8.0, max_batch_messages=10)
     batcher = ConversationBatcher(BridgeStore(tmp_path / "bridge.sqlite3"), config=config)
