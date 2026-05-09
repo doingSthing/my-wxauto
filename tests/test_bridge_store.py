@@ -60,6 +60,44 @@ def test_store_saves_and_updates_batch(tmp_path) -> None:
     assert row["completed_at"] == 13.0
 
 
+def test_store_lists_batches_by_status(tmp_path) -> None:
+    store = BridgeStore(tmp_path / "bridge.sqlite3")
+    message = BridgeMessage(chat_name="alice", content="hello", occurrence_index=0).with_key()
+    open_batch = ConversationBatch(
+        batch_id="batch-open",
+        chat_name="alice",
+        messages=(message,),
+        created_at=10.0,
+        status="open",
+    )
+    frozen_batch = ConversationBatch(
+        batch_id="batch-frozen",
+        chat_name="alice",
+        messages=(message,),
+        created_at=11.0,
+        frozen_at=12.0,
+        status="frozen",
+    )
+    completed_batch = ConversationBatch(
+        batch_id="batch-completed",
+        chat_name="alice",
+        messages=(message,),
+        created_at=13.0,
+        completed_at=14.0,
+        status="completed",
+    )
+
+    store.save_batch(open_batch)
+    store.save_batch(frozen_batch)
+    store.save_batch(completed_batch)
+
+    rows = store.list_batches(status="open")
+
+    assert [row["batch_id"] for row in rows] == ["batch-open"]
+    assert rows[0]["payload_json"]
+    assert store.list_batches(status="missing") == ()
+
+
 def test_store_keeps_batch_payload_lifecycle_fields_in_sync(tmp_path) -> None:
     store = BridgeStore(tmp_path / "bridge.sqlite3")
     message = BridgeMessage(chat_name="alice", content="hello", occurrence_index=0).with_key()

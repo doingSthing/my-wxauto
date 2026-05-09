@@ -121,6 +121,30 @@ class BridgeStore:
             ).fetchone()
         return dict(row) if row is not None else None
 
+    def list_batches(self, status: str | None = None) -> tuple[dict[str, Any], ...]:
+        with self._connection() as conn:
+            if status is None:
+                rows = conn.execute(
+                    """
+                    select batch_id, chat_name, status, created_at, frozen_at,
+                           submitted_at, completed_at, message_count, payload_json
+                    from conversation_batches
+                    order by created_at, batch_id
+                    """
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    select batch_id, chat_name, status, created_at, frozen_at,
+                           submitted_at, completed_at, message_count, payload_json
+                    from conversation_batches
+                    where status = ?
+                    order by created_at, batch_id
+                    """,
+                    (status,),
+                ).fetchall()
+        return tuple(dict(row) for row in rows)
+
     def record_outgoing_echo(
         self,
         chat_name: str,

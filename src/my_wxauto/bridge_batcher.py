@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import dataclass
+from typing import Any
 
 from .bridge_events import BridgeMessage, ConversationBatch
 from .bridge_store import BridgeStore
@@ -31,7 +33,7 @@ class ConversationBatcher:
     def __init__(self, store: BridgeStore, *, config: BatchingConfig | None = None) -> None:
         self.store = store
         self.config = config or BatchingConfig()
-        self._open: dict[str, _OpenBatch] = {}
+        self._open: dict[str, _OpenBatch] = self._load_open_batches()
 
     def add_messages(self, chat_name: str, messages: tuple[BridgeMessage, ...], *, now: float) -> int:
         keyed_messages = tuple(message.with_key() for message in messages)
@@ -40,6 +42,7 @@ class ConversationBatcher:
                 raise ValueError(f"message chat_name {keyed.chat_name!r} does not match {chat_name!r}")
 
         existing = self._open.get(chat_name)
+        existing_keys = {message.message_key for message in existing.messages} if existing is not None else set()
         existing_count = existing.message_count if existing is not None else 0
         remaining_capacity = max(self.config.max_batch_messages - existing_count, 0)
         accepted: list[BridgeMessage] = []
@@ -48,6 +51,9 @@ class ConversationBatcher:
             if keyed.is_self is True:
                 continue
             if self.store.matches_outgoing_echo(chat_name, keyed.content, now=now):
+                self.store.record_seen_message(keyed, now=now)
+                continue
+            if keyed.message_key in existing_keys:
                 self.store.record_seen_message(keyed, now=now)
                 continue
             if self.store.is_seen(keyed.message_key):
@@ -119,3 +125,55 @@ class ConversationBatcher:
             frozen_at=frozen_at,
             status=status,
         )
+
+    def _load_open_batches(self) -> dict[str, _OpenBatch]:
+        open_batches: dict[str, _OpenBatch] = {}
+        for row in self.store.list_batches(status="open"):
+            payload = json.loads(row["payload_json"])
+            chat_name = str(payload.get("chat_name") or row["chat_name"])
+            created_at = float(payload.get("created_at") or row["created_at"])
+            messages = tuple(self._message_from_payload(message) for message in payload.get("messages", ()))
+            # Recovered batches conservatively use created_at for last_message_at because only
+            # the stable event payload is persisted.
+            open_batches[chat_name] = _OpenBatch(
+                batch_id=str(payload.get("batch_id") or row["batch_id"]),
+                chat_name=chat_name,
+                messages=messages,
+                created_at=created_at,
+                last_message_at=created_at,
+            )
+        return open_batches
+
+    def _message_from_payload(self, payload: dict[str, Any]) -> BridgeMessage:
+        return BridgeMessage(
+            chat_name=str(payload.get("chat_name") or ""),
+            content=str(payload.get("content") or ""),
+            message_type=str(payload.get("message_type") or "unknown"),
+            sender=_optional_str(payload.get("sender")),
+            is_self=_optional_bool(payload.get("is_self")),
+            time_text=_optional_str(payload.get("time_text")),
+            occurrence_index=int(payload.get("occurrence_index") or 0),
+            message_key=str(payload.get("message_key") or ""),
+            raw=payload.get("raw") if isinstance(payload.get("raw"), dict) else None,
+        ).with_key()
+
+
+def _optional_str(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _optional_bool(value: object) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes"}:
+            return True
+        if lowered in {"false", "0", "no"}:
+            return False
+    return None

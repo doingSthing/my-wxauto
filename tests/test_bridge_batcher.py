@@ -152,13 +152,13 @@ def test_batcher_freezes_by_message_count(tmp_path) -> None:
     config = BatchingConfig(quiet_window_seconds=1.5, max_batch_wait_seconds=8.0, max_batch_messages=2)
     batcher = ConversationBatcher(BridgeStore(tmp_path / "bridge.sqlite3"), config=config)
 
-    frozen = batcher.add_messages(
+    accepted = batcher.add_messages(
         "alice",
         (_message("alice", "m1", 0), _message("alice", "m2", 1)),
         now=10.0,
     )
 
-    assert frozen == 2
+    assert accepted == 2
     due = batcher.freeze_due_batches(now=10.0)
     assert len(due) == 1
     assert due[0].message_count == 2
@@ -195,3 +195,51 @@ def test_batcher_persists_frozen_batch_status_and_payload(tmp_path) -> None:
     assert row["frozen_at"] == 11.5
     assert payload["status"] == "frozen"
     assert payload["message_count"] == 1
+
+
+def test_batcher_recovers_seen_open_batch_and_freezes_after_restart(tmp_path) -> None:
+    store = BridgeStore(tmp_path / "bridge.sqlite3")
+    message = _message("alice", "hello")
+    first_batcher = ConversationBatcher(store)
+    assert first_batcher.add_messages("alice", (message,), now=10.0) == 1
+
+    restarted = ConversationBatcher(store)
+    recovered = restarted.open_batch_for("alice")
+    assert recovered is not None
+    assert recovered.message_count == 1
+    assert recovered.messages[0].message_key == message.message_key
+    assert recovered.messages[0].content == "hello"
+    assert recovered.messages[0].raw == {}
+
+    frozen = restarted.freeze_due_batches(now=18.0)
+    row = store.get_batch(frozen[0].batch_id)
+
+    assert len(frozen) == 1
+    assert frozen[0].status == "frozen"
+    assert row["status"] == "frozen"
+    assert restarted.open_batch_for("alice") is None
+
+
+def test_batcher_recovers_unseen_open_batch_without_duplicating_after_restart(tmp_path) -> None:
+    store = BridgeStore(tmp_path / "bridge.sqlite3")
+    message = _message("alice", "hello")
+    open_batch = ConversationBatch(
+        batch_id="batch-open",
+        chat_name="alice",
+        messages=(message,),
+        created_at=10.0,
+        status="open",
+    )
+    store.save_batch(open_batch)
+    assert not store.is_seen(message.message_key)
+
+    restarted = ConversationBatcher(store)
+    assert restarted.add_messages("alice", (message,), now=11.0) == 0
+
+    recovered = restarted.open_batch_for("alice")
+    assert recovered is not None
+    assert recovered.message_count == 1
+    assert recovered.messages[0].message_key == message.message_key
+    assert recovered.messages[0].content == "hello"
+    assert recovered.messages[0].raw == {}
+    assert store.is_seen(message.message_key)
