@@ -576,12 +576,12 @@ def test_open_unread_sessions_respects_max_unread_chats_and_reports_each_chat(mo
         minimized=False,
     )
     sessions = [
-        {"chat_name": "a", "rect": {"left": 300, "top": 280, "right": 540, "bottom": 340}},
+        {"chat_name": "a", "unread_count": 2, "rect": {"left": 300, "top": 280, "right": 540, "bottom": 340}},
         {"chat_name": "b", "rect": {"left": 300, "top": 340, "right": 540, "bottom": 400}},
         {"chat_name": "c", "rect": {"left": 300, "top": 400, "right": 540, "bottom": 460}},
     ]
     clicked: list[tuple[int, int]] = []
-    reported: list[str] = []
+    reported: list[dict[str, object]] = []
 
     def fake_collect(window_arg, *, region, max_controls):
         chat_name = sessions[len(clicked) - 1]["chat_name"]
@@ -604,11 +604,13 @@ def test_open_unread_sessions_respects_max_unread_chats_and_reports_each_chat(mo
         sessions,
         max_controls=12,
         max_unread_chats=2,
-        on_chat_opened=lambda chat: reported.append(chat["chat_name"]),
+        on_chat_opened=reported.append,
     )
 
     assert [chat["chat_name"] for chat in opened] == ["a", "b"]
-    assert reported == ["a", "b"]
+    assert [chat["chat_name"] for chat in reported] == ["a", "b"]
+    assert opened[0]["unread_count"] == 2
+    assert reported[0]["unread_count"] == 2
     assert len(clicked) == 2
 
 

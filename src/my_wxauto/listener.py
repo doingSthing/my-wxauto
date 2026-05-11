@@ -252,12 +252,13 @@ def listen_conversation_batches(
         flash = detector.observe(time.monotonic(), probes._taskbar_signature(icons))
         if flash is not None:
             flash_count += 1
+            effective_max_chats_per_drain = 1 if _sender_resolution_enabled(resolve_senders) else max_chats_per_drain
             probes._probe_sessions_after_wakeup_with_timeout(
                 max_controls=max_controls,
                 timeout=action_timeout,
                 restore_icons=icons,
                 open_unread_messages=True,
-                max_unread_chats=max_chats_per_drain,
+                max_unread_chats=effective_max_chats_per_drain,
                 max_ui_busy_seconds=max_ui_busy_seconds,
                 on_chat_opened=on_chat_opened,
             )
@@ -304,8 +305,11 @@ def _resolve_probe_chat_senders(
     if not messages:
         return chat
 
-    resolved = _resolve_visible_message_senders(
-        messages,
+    resolve_start = _sender_resolution_start_index(chat, len(messages))
+    prefix = messages[:resolve_start]
+    targets = messages[resolve_start:]
+    resolved_targets = _resolve_visible_message_senders(
+        targets,
         lambda message: _resolve_sender_from_profile_card(
             message,
             timeout=profile_card_timeout,
@@ -316,11 +320,19 @@ def _resolve_probe_chat_senders(
         progress=sender_progress,
         candidate_filter=_message_has_avatar_candidates,
     )
+    resolved = (*prefix, *resolved_targets)
     return {**chat, "messages": [message.to_dict() for message in resolved]}
 
 
 def _sender_resolution_enabled(resolve_senders: bool | str) -> bool:
     return resolve_senders is True or resolve_senders == "profile_card"
+
+
+def _sender_resolution_start_index(chat: dict[str, Any], message_count: int) -> int:
+    unread_count = _safe_int(chat.get("unread_count"))
+    if unread_count <= 0:
+        return 0
+    return max(0, message_count - unread_count)
 
 
 def _window_rect_from_dict(value: object) -> WindowRect | None:

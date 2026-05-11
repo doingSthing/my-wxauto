@@ -231,6 +231,7 @@ def test_listen_conversation_batches_resolves_senders_when_enabled(monkeypatch, 
             return {"change_count": 1} if self.calls == 1 else None
 
     def fake_probe(**kwargs: object) -> dict[str, object]:
+        assert kwargs["max_unread_chats"] == 1
         kwargs["on_chat_opened"](
             {
                 "chat_name": "group",
@@ -275,6 +276,7 @@ def test_listen_conversation_batches_resolves_senders_when_enabled(monkeypatch, 
         interval=0.01,
         min_changes=1,
         max_probes=1,
+        max_chats_per_drain=5,
         resolve_senders="profile_card",
         sender_resolve_limit=2,
         sender_resolve_timeout=7.0,
@@ -287,6 +289,69 @@ def test_listen_conversation_batches_resolves_senders_when_enabled(monkeypatch, 
     assert stats.event_count == 1
     assert emitted[0].messages[0].sender == "Alice"
     assert emitted[0].messages[0].is_self is False
+
+
+def test_resolve_probe_chat_senders_only_resolves_unread_suffix(monkeypatch) -> None:
+    chat = {
+        "chat_name": "group",
+        "unread_count": 1,
+        "message_region": {"left": 100, "top": 200, "right": 900, "bottom": 700},
+        "messages": [
+            {
+                "content": "old one",
+                "message_type": "text",
+                "sender": None,
+                "raw_name": "old one",
+                "class_name": "mmui::ChatTextItemView",
+                "automation_id": "chat_message_list.qt_scrollarea_viewport.chat_bubble_item_view",
+                "rect": {"left": 320, "top": 220, "right": 620, "bottom": 260},
+            },
+            {
+                "content": "old two",
+                "message_type": "text",
+                "sender": None,
+                "raw_name": "old two",
+                "class_name": "mmui::ChatTextItemView",
+                "automation_id": "chat_message_list.qt_scrollarea_viewport.chat_bubble_item_view",
+                "rect": {"left": 320, "top": 280, "right": 620, "bottom": 320},
+            },
+            {
+                "content": "new message",
+                "message_type": "text",
+                "sender": None,
+                "raw_name": "new message",
+                "class_name": "mmui::ChatTextItemView",
+                "automation_id": "chat_message_list.qt_scrollarea_viewport.chat_bubble_item_view",
+                "rect": {"left": 320, "top": 340, "right": 620, "bottom": 380},
+            },
+        ],
+    }
+    resolver_calls: list[str] = []
+
+    def fake_resolver(message: listener.ChatMessage, **_kwargs: object) -> str | None:
+        resolver_calls.append(message.content)
+        return f"{message.content}-sender"
+
+    monkeypatch.setattr(listener, "_resolve_sender_from_profile_card", fake_resolver)
+    monkeypatch.setattr(
+        listener,
+        "_annotate_messages_with_self_flags",
+        lambda messages, _region: [
+            {**message, "visible_rect": message["rect"], "is_self": False}
+            for message in messages
+        ],
+    )
+
+    enriched = listener._resolve_probe_chat_senders(
+        chat,
+        resolve_senders="profile_card",
+        sender_resolve_limit=5,
+        sender_resolve_timeout=20.0,
+        profile_card_timeout=2.0,
+    )
+
+    assert resolver_calls == ["new message"]
+    assert [message["sender"] for message in enriched["messages"]] == [None, None, "new message-sender"]
 
 
 def test_listen_conversation_batches_deduplicates_repeated_probe_messages(monkeypatch, tmp_path) -> None:

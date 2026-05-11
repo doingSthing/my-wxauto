@@ -441,7 +441,13 @@ def _open_unread_sessions_and_collect_messages(
                 },
             )
         if click_point is None:
-            opened_chat = {"chat_name": chat_name, "source": source, "status": "no_click_point", "messages": []}
+            opened_chat = {
+                "chat_name": chat_name,
+                "source": source,
+                "status": "no_click_point",
+                "unread_count": _session_unread_count(session),
+                "messages": [],
+            }
             opened.append(opened_chat)
             if report_progress is not None:
                 report_progress("open_unread.chat", {"chat": opened_chat})
@@ -484,6 +490,7 @@ def _open_unread_sessions_and_collect_messages(
             "chat_name": chat_name,
             "source": source,
             "status": "ok",
+            "unread_count": _session_unread_count(session),
             "click_point": list(click_point),
             "message_region": _rect_to_dict(region),
             "uia": {
@@ -499,6 +506,13 @@ def _open_unread_sessions_and_collect_messages(
         if on_chat_opened is not None:
             on_chat_opened(opened_chat)
     return opened
+
+
+def _session_unread_count(session: dict[str, Any]) -> int:
+    try:
+        return max(0, int(session.get("unread_count") or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _session_click_point(session: dict[str, Any]) -> tuple[int, int] | None:
