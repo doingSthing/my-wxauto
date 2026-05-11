@@ -154,6 +154,141 @@ def test_listen_conversation_batches_emits_one_batch_per_chat(monkeypatch, tmp_p
     assert emitted[1].messages[0].content == "hi"
 
 
+def test_listen_conversation_batches_default_mode_does_not_resolve_senders(monkeypatch, tmp_path) -> None:
+    emitted = []
+
+    def fake_icons() -> list[dict[str, object]]:
+        return [{"image_sha1": "changed"}]
+
+    class FakeDetector:
+        def __init__(self, **_kwargs: object) -> None:
+            self.calls = 0
+
+        def observe(self, _now: float, _signature: object) -> dict[str, object] | None:
+            self.calls += 1
+            return {"change_count": 1} if self.calls == 1 else None
+
+    def fake_probe(**kwargs: object) -> dict[str, object]:
+        kwargs["on_chat_opened"](
+            {
+                "chat_name": "group",
+                "source": "unread_session",
+                "message_region": {"left": 100, "top": 200, "right": 900, "bottom": 700},
+                "messages": [
+                    {
+                        "content": "hello",
+                        "message_type": "text",
+                        "sender": None,
+                        "is_self": None,
+                        "time_text": "15:41",
+                        "rect": {"left": 320, "top": 260, "right": 620, "bottom": 310},
+                    }
+                ],
+            }
+        )
+        return {"status": "ok", "opened_unread_chats": []}
+
+    def fail_resolve(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise AssertionError("default listener mode must not resolve senders")
+
+    monkeypatch.setattr(listener.probes, "_ensure_windows", lambda: None)
+    monkeypatch.setattr(listener.probes, "TaskbarFlashDetector", FakeDetector)
+    monkeypatch.setattr(listener.probes, "inspect_wechat_taskbar_icons", fake_icons)
+    monkeypatch.setattr(listener.probes, "_probe_sessions_after_wakeup_with_timeout", fake_probe)
+    monkeypatch.setattr(listener.probes, "_taskbar_signature", lambda icons: tuple(item["image_sha1"] for item in icons))
+    monkeypatch.setattr(listener, "_resolve_probe_chat_senders", fail_resolve)
+    monkeypatch.setattr(listener.time, "sleep", lambda _seconds: None)
+
+    stats = listen_conversation_batches(
+        emitted.append,
+        seconds=5,
+        interval=0.01,
+        min_changes=1,
+        max_probes=1,
+        store_path=tmp_path / "bridge.sqlite3",
+        batching_config=BatchingConfig(quiet_window_seconds=0.0, max_batch_wait_seconds=8.0, max_batch_messages=10),
+    )
+
+    assert stats.event_count == 1
+    assert emitted[0].messages[0].sender is None
+    assert emitted[0].messages[0].is_self is None
+
+
+def test_listen_conversation_batches_resolves_senders_when_enabled(monkeypatch, tmp_path) -> None:
+    emitted = []
+    progress_events: list[dict[str, object]] = []
+    sender_progress = progress_events.append
+
+    def fake_icons() -> list[dict[str, object]]:
+        return [{"image_sha1": "changed"}]
+
+    class FakeDetector:
+        def __init__(self, **_kwargs: object) -> None:
+            self.calls = 0
+
+        def observe(self, _now: float, _signature: object) -> dict[str, object] | None:
+            self.calls += 1
+            return {"change_count": 1} if self.calls == 1 else None
+
+    def fake_probe(**kwargs: object) -> dict[str, object]:
+        kwargs["on_chat_opened"](
+            {
+                "chat_name": "group",
+                "source": "unread_session",
+                "message_region": {"left": 100, "top": 200, "right": 900, "bottom": 700},
+                "messages": [
+                    {
+                        "content": "hello",
+                        "message_type": "text",
+                        "sender": None,
+                        "is_self": None,
+                        "time_text": "15:41",
+                        "rect": {"left": 320, "top": 260, "right": 620, "bottom": 310},
+                    }
+                ],
+            }
+        )
+        return {"status": "ok", "opened_unread_chats": []}
+
+    def fake_resolve(chat: dict[str, object], **kwargs: object) -> dict[str, object]:
+        assert kwargs["resolve_senders"] == "profile_card"
+        assert kwargs["sender_resolve_limit"] == 2
+        assert kwargs["sender_resolve_timeout"] == 7.0
+        assert kwargs["profile_card_timeout"] == 1.0
+        assert kwargs["sender_progress"] is sender_progress
+        message = dict(chat["messages"][0])
+        message["sender"] = "Alice"
+        message["is_self"] = False
+        return {**chat, "messages": [message]}
+
+    monkeypatch.setattr(listener.probes, "_ensure_windows", lambda: None)
+    monkeypatch.setattr(listener.probes, "TaskbarFlashDetector", FakeDetector)
+    monkeypatch.setattr(listener.probes, "inspect_wechat_taskbar_icons", fake_icons)
+    monkeypatch.setattr(listener.probes, "_probe_sessions_after_wakeup_with_timeout", fake_probe)
+    monkeypatch.setattr(listener.probes, "_taskbar_signature", lambda icons: tuple(item["image_sha1"] for item in icons))
+    monkeypatch.setattr(listener, "_resolve_probe_chat_senders", fake_resolve)
+    monkeypatch.setattr(listener.time, "sleep", lambda _seconds: None)
+
+    stats = listen_conversation_batches(
+        emitted.append,
+        seconds=5,
+        interval=0.01,
+        min_changes=1,
+        max_probes=1,
+        resolve_senders="profile_card",
+        sender_resolve_limit=2,
+        sender_resolve_timeout=7.0,
+        profile_card_timeout=1.0,
+        sender_progress=sender_progress,
+        store_path=tmp_path / "bridge.sqlite3",
+        batching_config=BatchingConfig(quiet_window_seconds=0.0, max_batch_wait_seconds=8.0, max_batch_messages=10),
+    )
+
+    assert stats.event_count == 1
+    assert emitted[0].messages[0].sender == "Alice"
+    assert emitted[0].messages[0].is_self is False
+
+
 def test_listen_conversation_batches_deduplicates_repeated_probe_messages(monkeypatch, tmp_path) -> None:
     emitted = []
 

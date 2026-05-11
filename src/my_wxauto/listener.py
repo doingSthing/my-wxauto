@@ -165,6 +165,11 @@ def listen_conversation_batches(
     max_ui_busy_seconds: float = 15.0,
     store_path: str | Path = ".my_wxauto_bridge.sqlite3",
     batching_config: BatchingConfig | None = None,
+    resolve_senders: bool | str = False,
+    sender_resolve_limit: int = 5,
+    sender_resolve_timeout: float | None = 20.0,
+    profile_card_timeout: float = 2.0,
+    sender_progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> ListenerStats:
     """Listen for unread chats and synchronously deliver frozen batches.
 
@@ -175,6 +180,10 @@ def listen_conversation_batches(
     With the default quiet window, max_probes may collect messages without
     emitting immediately. Callers that need immediate delivery can use a
     shorter quiet window or let a later loop iteration flush due batches.
+
+    Sender resolution is disabled by default. Pass resolve_senders="profile_card"
+    to click visible message avatars and read profile-card names before batching.
+    This is slower and may briefly disturb the WeChat UI, so keep it opt-in.
     """
 
     probes._ensure_windows()
@@ -223,6 +232,15 @@ def listen_conversation_batches(
         if not chat_name or not chat.get("messages"):
             return
         now = time.time()
+        if _sender_resolution_enabled(resolve_senders):
+            chat = _resolve_probe_chat_senders(
+                chat,
+                resolve_senders=resolve_senders,
+                sender_resolve_limit=sender_resolve_limit,
+                sender_resolve_timeout=sender_resolve_timeout,
+                profile_card_timeout=profile_card_timeout,
+                sender_progress=sender_progress,
+            )
         messages = messages_from_chat_payload(chat)
         if not messages:
             return
