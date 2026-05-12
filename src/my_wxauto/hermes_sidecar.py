@@ -93,7 +93,7 @@ class SidecarConfig:
     bridge_url: str = "http://127.0.0.1:8765"
     poll_timeout: float = 30.0
     poll_limit: int = 5
-    hermes_command: tuple[str, ...] = ("wsl.exe", "hermes")
+    hermes_command: tuple[str, ...] = ("wsl.exe", "bash", "-lc", "hermes")
     hermes_timeout: float = 120.0
     dry_run: bool = False
     once: bool = False
@@ -107,23 +107,42 @@ class HermesRunner:
 
     def ask(self, prompt: str, *, session_name: str) -> str:
         result = subprocess.run(
-            [
-                *self.command,
-                "chat",
-                "-q",
-                prompt,
-                "-Q",
-                "--continue",
-                session_name,
-                "--source",
-                "tool",
-            ],
+            self._build_args(prompt, session_name),
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             timeout=self.timeout,
             check=True,
         )
         return result.stdout.strip()
+
+    def _build_args(self, prompt: str, session_name: str) -> list[str]:
+        hermes_args = [
+            "chat",
+            "-q",
+            prompt,
+            "-Q",
+            "--continue",
+            session_name,
+            "--source",
+            "tool",
+        ]
+
+        shell_index = self._bash_lc_index()
+        if shell_index is None:
+            return [*self.command, *hermes_args]
+
+        shell_prefix = list(self.command[: shell_index + 2])
+        base_command = list(self.command[shell_index + 2 :]) or ["hermes"]
+        shell_command = " ".join(shlex.quote(part) for part in [*base_command, *hermes_args])
+        return [*shell_prefix, shell_command]
+
+    def _bash_lc_index(self) -> int | None:
+        for index in range(len(self.command) - 1):
+            if self.command[index].lower() in {"bash", "bash.exe"} and self.command[index + 1] == "-lc":
+                return index
+        return None
 
 
 class HermesSidecar:
@@ -224,7 +243,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bridge-url", default="http://127.0.0.1:8765")
     parser.add_argument("--poll-timeout", type=float, default=30.0)
     parser.add_argument("--poll-limit", type=int, default=5)
-    parser.add_argument("--hermes-command", default="wsl.exe hermes")
+    parser.add_argument("--hermes-command", default="wsl.exe bash -lc hermes")
     parser.add_argument("--hermes-timeout", type=float, default=120.0)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--once", action="store_true")

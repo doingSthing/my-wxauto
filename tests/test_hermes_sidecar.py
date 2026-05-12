@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 
 import pytest
@@ -210,6 +211,8 @@ def test_hermes_runner_invokes_command(monkeypatch: pytest.MonkeyPatch) -> None:
         args: list[str],
         *,
         text: bool,
+        encoding: str,
+        errors: str,
         capture_output: bool,
         timeout: float,
         check: bool,
@@ -218,6 +221,8 @@ def test_hermes_runner_invokes_command(monkeypatch: pytest.MonkeyPatch) -> None:
             {
                 "args": args,
                 "text": text,
+                "encoding": encoding,
+                "errors": errors,
                 "capture_output": capture_output,
                 "timeout": timeout,
                 "check": check,
@@ -246,11 +251,79 @@ def test_hermes_runner_invokes_command(monkeypatch: pytest.MonkeyPatch) -> None:
                 "tool",
             ],
             "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
             "capture_output": True,
             "timeout": 12.5,
             "check": True,
         }
     ]
+
+
+def test_hermes_runner_wraps_wsl_bash_lc_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+
+    def fake_run(
+        args: list[str],
+        *,
+        text: bool,
+        encoding: str,
+        errors: str,
+        capture_output: bool,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(
+            {
+                "args": args,
+                "text": text,
+                "encoding": encoding,
+                "errors": errors,
+                "capture_output": capture_output,
+                "timeout": timeout,
+                "check": check,
+            }
+        )
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout=" ok \n")
+
+    monkeypatch.setattr(hermes_sidecar.subprocess, "run", fake_run)
+
+    runner = hermes_sidecar.HermesRunner(("wsl.exe", "bash", "-lc", "hermes"), timeout=12.5)
+    prompt = "第一行\n第二行"
+    result = runner.ask(prompt, session_name="wxauto-session")
+
+    expected_shell_command = " ".join(
+        shlex.quote(part)
+        for part in [
+            "hermes",
+            "chat",
+            "-q",
+            prompt,
+            "-Q",
+            "--continue",
+            "wxauto-session",
+            "--source",
+            "tool",
+        ]
+    )
+    assert result == "ok"
+    assert calls == [
+        {
+            "args": ["wsl.exe", "bash", "-lc", expected_shell_command],
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+            "capture_output": True,
+            "timeout": 12.5,
+            "check": True,
+        }
+    ]
+
+
+def test_default_hermes_command_uses_wsl_login_shell() -> None:
+    assert hermes_sidecar.SidecarConfig().hermes_command == ("wsl.exe", "bash", "-lc", "hermes")
+    args = hermes_sidecar.build_parser().parse_args([])
+    assert hermes_sidecar._split_command(args.hermes_command) == ("wsl.exe", "bash", "-lc", "hermes")
 
 
 def test_sidecar_processes_event_and_sends_reply() -> None:
