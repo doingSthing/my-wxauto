@@ -47,6 +47,40 @@ wx.listen_conversation_batches(
 )
 ```
 
+## 本地 HTTP 桥接服务
+
+本项目可以启动一个本地桥接进程，负责监听微信、去重、按会话批次输出事件，并通过 HTTP 提供给 Hermes/OpenClaw 等外部机器人。外部机器人通过 `/events` 拉取待处理事件，通过 `/send` 把回复发回微信。
+
+启动服务：
+
+```powershell
+python -m my_wxauto --bridge-server
+```
+
+常用参数示例：
+
+```powershell
+python -m my_wxauto --bridge-server --bridge-host 127.0.0.1 --bridge-port 8765 --store-path .\.wxauto-bridge.sqlite3 --bridge-queue-size 100 --listen-max-chats 5 --listen-resolve-senders profile_card
+```
+
+HTTP API 示例：
+
+```text
+GET  http://127.0.0.1:8765/health
+GET  http://127.0.0.1:8765/events?timeout=30&limit=5
+POST http://127.0.0.1:8765/send
+```
+
+`/send` 请求体示例：
+
+```json
+{ "who": "张三", "message": "你好" }
+```
+
+默认一次最多处理 5 个未读会话，桥接队列默认最多 100 条事件，发送人解析默认关闭。开启 `profile_card` 会点击头像，速度较慢，并且会打扰当前微信界面。
+
+`/events` 响应中的 `events` 是单个会话批次列表。外部机器人应逐会话处理，避免把多个会话混进同一个模型请求。
+
 ## 免责声明
 
 本工具仅供学习研究使用。使用者应遵守微信用户协议及相关法律法规，并自行承担使用本工具产生的风险与责任。
