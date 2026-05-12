@@ -36,6 +36,25 @@ class _FakeBridge:
         return {"sent": True}
 
 
+class _PollingBridge(_FakeBridge):
+    def __init__(
+        self,
+        payload: dict[str, object] | None = None,
+        *,
+        error: Exception | None = None,
+    ) -> None:
+        super().__init__()
+        self.payload = payload or {"events": []}
+        self.error = error
+        self.polls: list[tuple[float, int]] = []
+
+    def poll_events(self, timeout: float, limit: int) -> dict[str, object]:
+        self.polls.append((timeout, limit))
+        if self.error is not None:
+            raise self.error
+        return self.payload
+
+
 class _FakeHermes:
     def __init__(self, reply: str = " reply ") -> None:
         self.reply = reply
@@ -44,6 +63,11 @@ class _FakeHermes:
     def ask(self, prompt: str, *, session_name: str) -> str:
         self.calls.append((prompt, session_name))
         return self.reply
+
+
+class _RaisingHermes:
+    def ask(self, prompt: str, *, session_name: str) -> str:
+        raise RuntimeError("process bug")
 
 
 def test_format_prompt_includes_chat_and_messages() -> None:
@@ -175,7 +199,7 @@ def test_bridge_client_rejects_non_object_json(monkeypatch: pytest.MonkeyPatch) 
 
     client = BridgeClient("http://bridge")
 
-    with pytest.raises(RuntimeError, match="bridge response must be a JSON object"):
+    with pytest.raises(hermes_sidecar.BridgeRequestError, match="bridge response must be a JSON object"):
         client.health()
 
 
@@ -298,3 +322,127 @@ def test_sidecar_missing_chat_name_does_not_call_hermes() -> None:
     assert result is None
     assert hermes.calls == []
     assert bridge.sent == []
+
+
+def test_sidecar_run_once_processes_polled_events() -> None:
+    bridge = _PollingBridge(
+        {
+            "events": [
+                {"chat_name": "Room 1", "messages": [{"content": "hi"}]},
+                {"chat_name": "Room 2", "messages": [{"content": "hello"}]},
+            ]
+        }
+    )
+    hermes = _FakeHermes("reply")
+    config = hermes_sidecar.SidecarConfig(poll_timeout=4.5, poll_limit=2, once=True)
+    sidecar = hermes_sidecar.HermesSidecar(config, bridge=bridge, hermes=hermes)
+
+    sidecar.run()
+
+    assert bridge.polls == [(4.5, 2)]
+    assert bridge.sent == [("Room 1", "reply"), ("Room 2", "reply")]
+    assert len(hermes.calls) == 2
+
+
+def test_sidecar_run_once_skips_non_dict_events() -> None:
+    bridge = _PollingBridge({"events": ["bad", {"chat_name": "Room", "messages": [{"content": "hi"}]}, 123]})
+    hermes = _FakeHermes("reply")
+    sidecar = hermes_sidecar.HermesSidecar(
+        hermes_sidecar.SidecarConfig(once=True),
+        bridge=bridge,
+        hermes=hermes,
+    )
+
+    sidecar.run()
+
+    assert bridge.sent == [("Room", "reply")]
+    assert len(hermes.calls) == 1
+
+
+def test_sidecar_run_once_does_not_swallow_process_event_runtime_error() -> None:
+    bridge = _PollingBridge({"events": [{"chat_name": "Room", "messages": [{"content": "hi"}]}]})
+    sidecar = hermes_sidecar.HermesSidecar(
+        hermes_sidecar.SidecarConfig(once=True),
+        bridge=bridge,
+        hermes=_RaisingHermes(),
+    )
+
+    with pytest.raises(RuntimeError, match="process bug"):
+        sidecar.run()
+
+
+def test_sidecar_run_once_logs_and_sleeps_on_bridge_error(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    bridge = _PollingBridge(error=hermes_sidecar.BridgeRequestError("boom"))
+    sleeps: list[float] = []
+    monkeypatch.setattr(hermes_sidecar.time, "sleep", sleeps.append)
+    sidecar = hermes_sidecar.HermesSidecar(
+        hermes_sidecar.SidecarConfig(once=True, retry_delay=1.25),
+        bridge=bridge,
+        hermes=_FakeHermes(),
+    )
+
+    sidecar.run()
+
+    assert sleeps == [1.25]
+    assert capsys.readouterr().out == "[my-wxauto hermes-sidecar] error: boom\n"
+
+
+def test_main_builds_sidecar_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    class FakeSidecar:
+        def __init__(self, config: hermes_sidecar.SidecarConfig) -> None:
+            calls.append({"config": config})
+
+        def check_health(self) -> dict[str, object]:
+            calls.append({"check_health": True})
+            return {"status": "ok"}
+
+        def run(self) -> None:
+            calls.append({"run": True})
+
+    monkeypatch.setattr(hermes_sidecar, "HermesSidecar", FakeSidecar)
+
+    result = hermes_sidecar.main(
+        [
+            "--bridge-url",
+            "http://bridge",
+            "--poll-timeout",
+            "7.5",
+            "--poll-limit",
+            "9",
+            "--hermes-command",
+            "wsl.exe  hermes --profile sidecar",
+            "--hermes-timeout",
+            "15.5",
+            "--dry-run",
+            "--once",
+        ]
+    )
+
+    assert result == 0
+    assert calls[0]["config"] == hermes_sidecar.SidecarConfig(
+        bridge_url="http://bridge",
+        poll_timeout=7.5,
+        poll_limit=9,
+        hermes_command=("wsl.exe", "hermes", "--profile", "sidecar"),
+        hermes_timeout=15.5,
+        dry_run=True,
+        once=True,
+    )
+    assert calls[1:] == [{"check_health": True}, {"run": True}]
+
+
+def test_split_command_filters_empty_parts() -> None:
+    assert hermes_sidecar._split_command("  wsl.exe   hermes  chat ") == ("wsl.exe", "hermes", "chat")
+
+
+def test_split_command_keeps_quoted_windows_path_and_profile_value() -> None:
+    command = r'"C:\Program Files\Hermes\hermes.exe" --profile "wx sidecar"'
+
+    result = hermes_sidecar._split_command(command)
+
+    assert result == (r"C:\Program Files\Hermes\hermes.exe", "--profile", "wx sidecar")

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
+import shlex
 import subprocess
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
-from urllib import parse, request
+from urllib import error as urlerror, parse, request
 
 
 def _normalize_text(value: Any) -> str:
@@ -19,6 +22,10 @@ def session_name_for_chat(chat_name: Any) -> str:
     normalized_chat_name = _normalize_text(chat_name)
     digest = hashlib.sha1(normalized_chat_name.encode("utf-8")).hexdigest()[:16]
     return f"wxauto-{digest}"
+
+
+class BridgeRequestError(RuntimeError):
+    pass
 
 
 class BridgeClient:
@@ -60,13 +67,16 @@ class BridgeClient:
             result = json.loads(response.read().decode("utf-8"))
 
         if not isinstance(result, dict):
-            raise RuntimeError("bridge response must be a JSON object")
+            raise BridgeRequestError("bridge response must be a JSON object")
 
         return result
 
 
 class BridgeLike(Protocol):
     def health(self) -> dict[str, Any]:
+        ...
+
+    def poll_events(self, timeout: float, limit: int) -> dict[str, Any]:
         ...
 
     def send(self, who: str, message: str) -> dict[str, Any]:
@@ -153,6 +163,25 @@ class HermesSidecar:
         self.bridge.send(chat_name, reply)
         return reply
 
+    def run(self) -> None:
+        while True:
+            try:
+                payload = self.bridge.poll_events(
+                    timeout=self.config.poll_timeout,
+                    limit=self.config.poll_limit,
+                )
+                events = payload.get("events") or []
+                for event in events:
+                    if not isinstance(event, dict):
+                        continue
+                    self.process_event(event)
+            except (urlerror.URLError, TimeoutError, BridgeRequestError, subprocess.SubprocessError) as exc:
+                print(f"[my-wxauto hermes-sidecar] error: {exc}")
+                time.sleep(self.config.retry_delay)
+
+            if self.config.once:
+                return
+
 
 def format_prompt(event: dict[str, Any]) -> str:
     chat_name = _normalize_text(event.get("chat_name"))
@@ -188,3 +217,40 @@ def format_prompt(event: dict[str, Any]) -> str:
     lines.append("")
     lines.append("请只输出要发送到微信的回复文本。不要解释，不要包含前后缀。")
     return "\n".join(lines)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--bridge-url", default="http://127.0.0.1:8765")
+    parser.add_argument("--poll-timeout", type=float, default=30.0)
+    parser.add_argument("--poll-limit", type=int, default=5)
+    parser.add_argument("--hermes-command", default="wsl.exe hermes")
+    parser.add_argument("--hermes-timeout", type=float, default=120.0)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--once", action="store_true")
+    return parser
+
+
+def _split_command(value: str) -> tuple[str, ...]:
+    return tuple(shlex.split(value, posix=True))
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    config = SidecarConfig(
+        bridge_url=args.bridge_url,
+        poll_timeout=args.poll_timeout,
+        poll_limit=args.poll_limit,
+        hermes_command=_split_command(args.hermes_command),
+        hermes_timeout=args.hermes_timeout,
+        dry_run=args.dry_run,
+        once=args.once,
+    )
+    sidecar = HermesSidecar(config)
+    sidecar.check_health()
+    sidecar.run()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
