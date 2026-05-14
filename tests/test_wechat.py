@@ -106,6 +106,12 @@ class FakeKeyboard:
         self.actions.append(("press", key))
 
 
+class FakeSearchControl:
+    def __init__(self, name: str, left: int, top: int, right: int, bottom: int) -> None:
+        self.name = name
+        self.rect = {"left": left, "top": top, "right": right, "bottom": bottom}
+
+
 class FakeWxauto4Backend:
     def prepare_window(self) -> Wxauto4CallResult:
         return Wxauto4CallResult(ok=True, value="init")
@@ -165,6 +171,32 @@ def test_chatwith_can_move_down_before_opening_search_result() -> None:
         ("press", "down"),
         ("press", "enter"),
     ]
+
+
+def test_chatwith_clicks_exact_result_under_chat_section(monkeypatch) -> None:
+    keyboard = FakeKeyboard()
+    wx = WeChat(
+        window_controller=FakeWindowController(),
+        keyboard=keyboard,
+        search_options=SearchOptions(result_wait=0, chat_open_wait=0),
+    )
+
+    monkeypatch.setattr(
+        wx,
+        "_collect_search_result_controls",
+        lambda _window: (
+            FakeSearchControl("四人行", 60, 74, 180, 104),
+            FakeSearchControl("四人行24小时自助棋牌室", 60, 112, 240, 142),
+            FakeSearchControl("群聊", 60, 204, 120, 226),
+            FakeSearchControl("四人行", 72, 236, 180, 276),
+        ),
+    )
+
+    result = wx.ChatWith("四人行")
+
+    assert result
+    assert keyboard.actions[-1] == ("click", (126, 256))
+    assert ("press", "enter") not in keyboard.actions
 
 
 def test_chatwith_rejects_empty_target() -> None:

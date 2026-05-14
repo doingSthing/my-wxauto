@@ -15,6 +15,7 @@ from .window import WeChatWindow, WeChatWindowController
 from .wxauto4_backend import Wxauto4Backend
 
 LOGGER = logging.getLogger(__name__)
+SEARCH_RESULT_SECTION_LABELS = ("联系人", "群聊")
 
 
 @dataclass(frozen=True)
@@ -36,7 +37,13 @@ class SearchOptions:
     restore_clipboard: bool = True
     search_down_count: int = 0
     search_down_interval: float = 0.06
+    prefer_exact_search_result_click: bool = True
 
+
+@dataclass(frozen=True)
+class _SearchResultControl:
+    name: str
+    rect: dict[str, int]
 
 
 class WeChat:
@@ -239,11 +246,7 @@ class WeChat:
         )
         wait_seconds = float(force_wait) if force else self.search_options.result_wait
         time.sleep(wait_seconds)
-        down_count = self.search_options.search_down_count
-        for _ in range(down_count):
-            keyboard.press("down")
-            time.sleep(self.search_options.search_down_interval)
-        keyboard.press("enter")
+        self._open_selected_search_result_or_press_enter(window, target)
         time.sleep(self.search_options.chat_open_wait)
         return window, "window-controller"
 
@@ -277,6 +280,19 @@ class WeChat:
         self.trace("shortcut_search.after_paste")
         wait_seconds = float(force_wait) if force else self.search_options.result_wait
         time.sleep(wait_seconds)
+        window = self._focused_search_window()
+        self._open_selected_search_result_or_press_enter(window, target)
+        time.sleep(self.search_options.chat_open_wait)
+
+    def _open_selected_search_result_or_press_enter(
+        self,
+        window: WeChatWindow | None,
+        target: str,
+    ) -> None:
+        if self._click_exact_search_result(window, target):
+            return
+
+        keyboard = self._keyboard
         down_count = self.search_options.search_down_count
         for _ in range(down_count):
             keyboard.press("down")
@@ -284,7 +300,69 @@ class WeChat:
         self.trace("shortcut_search.before_enter", down_count=down_count)
         keyboard.press("enter")
         self.trace("shortcut_search.after_enter")
-        time.sleep(self.search_options.chat_open_wait)
+
+    def _click_exact_search_result(self, window: WeChatWindow | None, target: str) -> bool:
+        if window is None or not self.search_options.prefer_exact_search_result_click:
+            return False
+        try:
+            controls = tuple(self._collect_search_result_controls(window))
+        except Exception:
+            LOGGER.debug("Failed to collect search result controls.", exc_info=True)
+            return False
+        control = _pick_exact_search_result_control(controls, target)
+        if control is None:
+            self.trace("search_result.no_exact_click", target=target, controls=len(controls))
+            return False
+        point = _rect_center(control.rect)
+        if point is None:
+            return False
+        self.trace("search_result.before_click", target=target, point=point, name=control.name)
+        self._keyboard.click(*point)
+        self.trace("search_result.after_click", target=target, point=point, name=control.name)
+        return True
+
+    def _focused_search_window(self) -> WeChatWindow | None:
+        try:
+            return self._window_controller.find_main_window(reveal=False)
+        except Exception:
+            LOGGER.debug("Unable to resolve focused WeChat window for search results.", exc_info=True)
+            return None
+
+    def _collect_search_result_controls(self, window: WeChatWindow) -> tuple[_SearchResultControl, ...]:
+        from pywinauto import Desktop
+
+        desktop = Desktop(backend="uia")
+        wrapper = desktop.window(handle=window.hwnd)
+        panel_right = min(window.rect.right, window.rect.left + 420)
+        panel_top = window.rect.top + 48
+        controls: list[_SearchResultControl] = []
+        for control in wrapper.descendants():
+            try:
+                rect = control.rectangle()
+            except Exception:
+                continue
+            if rect.width() <= 0 or rect.height() <= 0:
+                continue
+            if rect.right < window.rect.left or rect.left > panel_right:
+                continue
+            if rect.bottom < panel_top or rect.top > window.rect.bottom:
+                continue
+            element_info = getattr(control, "element_info", None)
+            name = str(getattr(element_info, "name", "") or "").strip()
+            if not name:
+                continue
+            controls.append(
+                _SearchResultControl(
+                    name=name,
+                    rect={
+                        "left": int(rect.left),
+                        "top": int(rect.top),
+                        "right": int(rect.right),
+                        "bottom": int(rect.bottom),
+                    },
+                )
+            )
+        return tuple(controls)
 
     def _focus_search_box(self, window: WeChatWindow, *, shortcut_first: bool = False) -> None:
         options = self.search_options
@@ -573,3 +651,78 @@ class WeChat:
             BridgeStore(self.bridge_store_path).record_outgoing_echo(target, content, sent_at=time.time())
         except Exception:
             LOGGER.debug("Unable to record outgoing echo.", exc_info=True)
+
+
+def _pick_exact_search_result_control(
+    controls: Sequence[object],
+    target: str,
+) -> object | None:
+    normalized_target = _normalize_search_result_text(target)
+    if not normalized_target:
+        return None
+
+    sections = [
+        control
+        for control in controls
+        if _normalize_search_result_text(getattr(control, "name", "")) in SEARCH_RESULT_SECTION_LABELS
+    ]
+    exact_matches = [
+        control
+        for control in controls
+        if _search_result_primary_name(str(getattr(control, "name", ""))) == normalized_target
+    ]
+    if not exact_matches:
+        return None
+
+    section_matches = [
+        match
+        for match in exact_matches
+        if any(_rect_top(match) >= _rect_bottom(section) - 2 for section in sections)
+    ]
+    if section_matches:
+        return min(section_matches, key=_rect_top)
+
+    if len(exact_matches) == 1:
+        return exact_matches[0]
+    return None
+
+
+def _search_result_primary_name(value: str) -> str:
+    for line in str(value or "").splitlines():
+        normalized = _normalize_search_result_text(line)
+        if normalized:
+            return normalized
+    return ""
+
+
+def _normalize_search_result_text(value: str) -> str:
+    return str(value or "").strip()
+
+
+def _rect_top(control: object) -> int:
+    rect = getattr(control, "rect", {}) or {}
+    try:
+        return int(rect["top"])
+    except (KeyError, TypeError, ValueError):
+        return 0
+
+
+def _rect_bottom(control: object) -> int:
+    rect = getattr(control, "rect", {}) or {}
+    try:
+        return int(rect["bottom"])
+    except (KeyError, TypeError, ValueError):
+        return 0
+
+
+def _rect_center(rect: dict[str, int]) -> tuple[int, int] | None:
+    try:
+        left = int(rect["left"])
+        top = int(rect["top"])
+        right = int(rect["right"])
+        bottom = int(rect["bottom"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if right <= left or bottom <= top:
+        return None
+    return ((left + right) // 2, (top + bottom) // 2)
