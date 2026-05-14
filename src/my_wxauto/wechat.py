@@ -15,7 +15,9 @@ from .window import WeChatWindow, WeChatWindowController
 from .wxauto4_backend import Wxauto4Backend
 
 LOGGER = logging.getLogger(__name__)
-SEARCH_RESULT_SECTION_LABELS = ("联系人", "群聊")
+POSITIVE_SEARCH_RESULT_SECTION_LABELS = ("最常使用", "联系人", "群聊")
+NEGATIVE_SEARCH_RESULT_SECTION_LABELS = ("聊天记录", "搜索网络结果", "搜网络结果")
+SEARCH_RESULT_SECTION_LABELS = POSITIVE_SEARCH_RESULT_SECTION_LABELS + NEGATIVE_SEARCH_RESULT_SECTION_LABELS
 
 
 @dataclass(frozen=True)
@@ -309,6 +311,11 @@ class WeChat:
         except Exception:
             LOGGER.debug("Failed to collect search result controls.", exc_info=True)
             return False
+        self.trace(
+            "search_result.candidates",
+            target=target,
+            controls=[_search_result_control_data(control) for control in controls],
+        )
         control = _pick_exact_search_result_control(controls, target)
         if control is None:
             self.trace("search_result.no_exact_click", target=target, controls=len(controls))
@@ -316,6 +323,13 @@ class WeChat:
         point = _rect_center(control.rect)
         if point is None:
             return False
+        self.trace(
+            "search_result.selected",
+            target=target,
+            name=control.name,
+            rect=control.rect,
+            point=point,
+        )
         self.trace("search_result.before_click", target=target, point=point, name=control.name)
         self._keyboard.click(*point)
         self.trace("search_result.after_click", target=target, point=point, name=control.name)
@@ -661,30 +675,61 @@ def _pick_exact_search_result_control(
     if not normalized_target:
         return None
 
-    sections = [
-        control
-        for control in controls
-        if _normalize_search_result_text(getattr(control, "name", "")) in SEARCH_RESULT_SECTION_LABELS
-    ]
+    sorted_controls = sorted(controls, key=_rect_top)
+    sections = _search_result_sections(sorted_controls)
     exact_matches = [
         control
-        for control in controls
+        for control in sorted_controls
         if _search_result_primary_name(str(getattr(control, "name", ""))) == normalized_target
     ]
     if not exact_matches:
         return None
 
-    section_matches = [
-        match
-        for match in exact_matches
-        if any(_rect_top(match) >= _rect_bottom(section) - 2 for section in sections)
-    ]
+    section_matches = _exact_matches_in_positive_sections(exact_matches, sections)
     if section_matches:
         return min(section_matches, key=_rect_top)
 
-    if len(exact_matches) == 1:
+    if not sections and len(exact_matches) == 1:
         return exact_matches[0]
     return None
+
+
+def _search_result_sections(controls: Sequence[object]) -> list[tuple[str, object, int]]:
+    sections: list[tuple[str, object, int]] = []
+    for index, control in enumerate(controls):
+        label = _normalize_search_result_text(getattr(control, "name", ""))
+        if label in SEARCH_RESULT_SECTION_LABELS:
+            sections.append((label, control, index))
+    return sections
+
+
+def _exact_matches_in_positive_sections(
+    exact_matches: Sequence[object],
+    sections: Sequence[tuple[str, object, int]],
+) -> list[object]:
+    matches: list[object] = []
+    for match in exact_matches:
+        label = _containing_search_result_section(match, sections)
+        if label in POSITIVE_SEARCH_RESULT_SECTION_LABELS:
+            matches.append(match)
+    return matches
+
+
+def _containing_search_result_section(
+    match: object,
+    sections: Sequence[tuple[str, object, int]],
+) -> str | None:
+    match_top = _rect_top(match)
+    containing_label: str | None = None
+    for index, (label, section, _control_index) in enumerate(sections):
+        section_bottom = _rect_bottom(section) - 2
+        next_section_top = _rect_top(sections[index + 1][1]) if index + 1 < len(sections) else None
+        if match_top < section_bottom:
+            continue
+        if next_section_top is not None and match_top >= next_section_top:
+            continue
+        containing_label = label
+    return containing_label
 
 
 def _search_result_primary_name(value: str) -> str:
@@ -697,6 +742,13 @@ def _search_result_primary_name(value: str) -> str:
 
 def _normalize_search_result_text(value: str) -> str:
     return str(value or "").strip()
+
+
+def _search_result_control_data(control: object) -> dict[str, object]:
+    return {
+        "name": str(getattr(control, "name", "") or ""),
+        "rect": dict(getattr(control, "rect", {}) or {}),
+    }
 
 
 def _rect_top(control: object) -> int:

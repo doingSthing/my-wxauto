@@ -177,6 +177,20 @@ def test_main_sends_message_when_message_argument_is_present(monkeypatch, capsys
     assert output["data"]["message"] == "你好"
 
 
+def test_main_send_dry_run_opens_chat_without_sending(monkeypatch, capsys) -> None:
+    FakeWeChat.instances.clear()
+    monkeypatch.setattr(cli, "WeChat", FakeWeChat)
+
+    exit_code = cli.main(["张三", "--message", "你好", "--send-dry-run"])
+
+    assert exit_code == 0
+    assert FakeWeChat.instances[0].calls == [("ChatWith", ("张三",))]
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "success"
+    assert output["data"]["dry_run"] is True
+    assert output["data"]["message"] == "你好"
+
+
 def test_main_writes_utf8_output_file(monkeypatch, capsys, tmp_path) -> None:
     FakeWeChat.instances.clear()
     monkeypatch.setattr(cli, "WeChat", FakeWeChat)

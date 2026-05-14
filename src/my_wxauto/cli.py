@@ -8,6 +8,7 @@ from pathlib import Path
 from .bridge_server import BridgeServerConfig, run_bridge_server
 from .bridge_events import ConversationBatch
 from .listener import ListenerStats
+from .response import WxResponse
 from .wechat import SearchOptions, WeChat
 from .window import WeChatWindowController
 
@@ -16,6 +17,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Open a WeChat conversation or send a message.")
     parser.add_argument("who", nargs="?", help="contact, group, or session name")
     parser.add_argument("--message", help="要发送的文本消息；不传时仅打开聊天窗口")
+    parser.add_argument("--send-dry-run", action="store_true", help="只测试发送前的会话定位，不真正发送消息")
     parser.add_argument("--diagnose", action="store_true", help="print detected WeChat processes/windows and exit")
     parser.add_argument("--watch-wakeup", type=float, default=0.0, metavar="SECONDS", help="observe taskbar/tray flashing, then restore WeChat and print unread sessions")
     parser.add_argument("--wakeup-burst-changes", type=int, default=4, help="changes required in the burst window for --watch-wakeup")
@@ -191,10 +193,25 @@ def _run(args: argparse.Namespace) -> int:
     )
     if args.message is None:
         result = wx.ChatWith(args.who)
+    elif args.send_dry_run:
+        result = _send_dry_run(wx, args.who, args.message)
     else:
         result = wx.SendMsg(args.message, args.who)
     print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
     return 0 if result else 1
+
+
+def _send_dry_run(wx: WeChat, who: str, message: str) -> WxResponse:
+    opened = wx.ChatWith(who)
+    data = dict(opened.data)
+    data.update(
+        {
+            "dry_run": True,
+            "message": str(message or "").strip(),
+            "message_length": len(str(message or "").strip()),
+        }
+    )
+    return WxResponse(opened.status, "发送诊断已完成，未真正发送消息。", data)
 
 
 def _listener_sender_mode(value: str) -> bool | str:

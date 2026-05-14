@@ -199,6 +199,83 @@ def test_chatwith_clicks_exact_result_under_chat_section(monkeypatch) -> None:
     assert ("press", "enter") not in keyboard.actions
 
 
+def test_chatwith_traces_search_result_candidates(monkeypatch) -> None:
+    events: list[tuple[str, dict[str, object]]] = []
+    keyboard = FakeKeyboard()
+    wx = WeChat(
+        window_controller=FakeWindowController(),
+        keyboard=keyboard,
+        search_options=SearchOptions(result_wait=0, chat_open_wait=0),
+    )
+    wx.trace = lambda label, **extra: events.append((label, extra))
+
+    monkeypatch.setattr(
+        wx,
+        "_collect_search_result_controls",
+        lambda _window: (
+            FakeSearchControl("四人行", 60, 74, 180, 104),
+            FakeSearchControl("群聊", 60, 204, 120, 226),
+            FakeSearchControl("四人行", 72, 236, 180, 276),
+        ),
+    )
+
+    result = wx.ChatWith("四人行")
+
+    assert result
+    assert (
+        "search_result.candidates",
+        {
+            "target": "四人行",
+            "controls": [
+                {"name": "四人行", "rect": {"left": 60, "top": 74, "right": 180, "bottom": 104}},
+                {"name": "群聊", "rect": {"left": 60, "top": 204, "right": 120, "bottom": 226}},
+                {"name": "四人行", "rect": {"left": 72, "top": 236, "right": 180, "bottom": 276}},
+            ],
+        },
+    ) in events
+    assert (
+        "search_result.selected",
+        {
+            "target": "四人行",
+            "name": "四人行",
+            "rect": {"left": 72, "top": 236, "right": 180, "bottom": 276},
+            "point": (126, 256),
+        },
+    ) in events
+
+
+def test_chatwith_prefers_chat_result_over_chat_history(monkeypatch) -> None:
+    keyboard = FakeKeyboard()
+    wx = WeChat(
+        window_controller=FakeWindowController(),
+        keyboard=keyboard,
+        search_options=SearchOptions(result_wait=0, chat_open_wait=0),
+    )
+
+    monkeypatch.setattr(
+        wx,
+        "_collect_search_result_controls",
+        lambda _window: (
+            FakeSearchControl("最常使用", 126, 183, 446, 215),
+            FakeSearchControl("张勋", 126, 215, 446, 279),
+            FakeSearchControl("群聊", 126, 279, 446, 311),
+            FakeSearchControl("张勋、张盼", 126, 311, 446, 375),
+            FakeSearchControl("查看全部(4)", 126, 503, 446, 537),
+            FakeSearchControl("聊天记录", 126, 537, 446, 569),
+            FakeSearchControl("Lagom", 126, 569, 446, 637),
+            FakeSearchControl("张勋", 126, 637, 446, 725),
+            FakeSearchControl("搜索网络结果", 126, 847, 446, 879),
+            FakeSearchControl("张勋", 126, 879, 446, 913),
+        ),
+    )
+
+    result = wx.ChatWith("张勋")
+
+    assert result
+    assert keyboard.actions[-1] == ("click", (286, 247))
+    assert ("press", "enter") not in keyboard.actions
+
+
 def test_chatwith_rejects_empty_target() -> None:
     wx = WeChat(window_controller=FakeWindowController(), keyboard=FakeKeyboard())
 

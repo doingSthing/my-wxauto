@@ -24,6 +24,17 @@ python -m my_wxauto "张三"
 python -m my_wxauto "张三" --message "你好"
 ```
 
+如果怀疑发送前找错了会话，先单独测试“发送前定位会话”这一步。下面命令会打开目标会话并输出搜索候选和最终点击项，但不会真正发送消息：
+
+```powershell
+python -m my_wxauto "张三" --message "发送前定位测试" --send-dry-run --trace-ui --output send-dry-run.txt
+```
+
+执行后重点看 `send-dry-run.txt` 里的两类日志：
+
+- `search_result.candidates`：本次搜索识别到的候选控件。
+- `search_result.selected`：最终准备点击的候选项和坐标。
+
 查看当前能识别到的微信进程和窗口：
 
 ```powershell
@@ -78,6 +89,38 @@ wx.listen_conversation_batches(
 ## 本地 HTTP 桥接服务
 
 桥接服务负责监听微信、去重、按会话批次输出事件，并提供 `/send` 让外部机器人把回复发回微信。
+
+推荐测试启动顺序：
+
+1. 终端 1 启动桥接服务。这个命令会一直运行，不要关闭窗口：
+
+```powershell
+python -m my_wxauto --bridge-server --bridge-host 127.0.0.1 --bridge-port 8765 --store-path .\.wxauto-bridge.sqlite3 --bridge-queue-size 100 --listen-max-chats 5
+```
+
+2. 终端 2 验证桥接服务是否启动成功：
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8765/health
+```
+
+3. 首次联调 Hermes 前，建议先用 dry-run。它只会打印 Hermes 准备回复的内容，不会真的发送微信消息，也不会 ack/complete 事件：
+
+```powershell
+python -m my_wxauto.hermes_sidecar --bridge-url http://127.0.0.1:8765 --dry-run --once --debug
+```
+
+4. dry-run 确认正常后，再启动正式 sidecar。这个命令也会一直运行，收到事件后会调用 Hermes，并把回复发回微信：
+
+```powershell
+python -m my_wxauto.hermes_sidecar --bridge-url http://127.0.0.1:8765
+```
+
+如果只想验证桥接服务的发送能力，可以在桥接服务运行时执行：
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8765/send -ContentType "application/json; charset=utf-8" -Body (@{ who = "张三"; message = "桥接发送测试" } | ConvertTo-Json -Compress)
+```
 
 启动服务：
 
