@@ -14,6 +14,7 @@ VK = {
     "enter": 0x0D,
     "esc": 0x1B,
     "tab": 0x09,
+    "down": 0x28,
     "a": 0x41,
     "f": 0x46,
     "k": 0x4B,

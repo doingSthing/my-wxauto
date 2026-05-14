@@ -56,6 +56,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--shortcut", default="ctrl+f", help="搜索快捷键，例如 ctrl+f 或 ctrl+k")
     parser.add_argument("--search-x", type=int, default=120, help="搜索框相对窗口左上角的 X 坐标")
     parser.add_argument("--search-y", type=int, default=55, help="搜索框相对窗口左上角的 Y 坐标")
+    parser.add_argument("--search-down-count", type=int, default=0, help="搜索后回车前额外按方向键下的次数；默认 0，避免误选第二条结果")
+    parser.add_argument("--search-down-interval", type=float, default=0.06, help="多次按方向键下之间的等待秒数")
     parser.add_argument("--wait", type=float, default=0.65, help="输入名称后等待搜索结果的秒数")
     parser.add_argument("--window-ready-wait", type=float, default=0.0, help="恢复微信窗口后，点击搜索前额外等待的秒数")
     parser.add_argument("--window-ready-timeout", type=float, default=5.0, help="等待微信窗口稳定的最长秒数")
@@ -174,6 +176,8 @@ def _run(args: argparse.Namespace) -> int:
         use_shortcut=not args.no_shortcut,
         use_click=args.click_search_box and not args.no_click,
         result_wait=args.wait,
+        search_down_count=max(args.search_down_count, 0),
+        search_down_interval=max(args.search_down_interval, 0.0),
         window_ready_wait=args.window_ready_wait,
         window_ready_timeout=args.window_ready_timeout,
         restore_clipboard=not args.keep_clipboard,

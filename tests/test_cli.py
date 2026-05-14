@@ -143,6 +143,27 @@ def test_main_opens_chat_without_message(monkeypatch, capsys) -> None:
     assert output["data"]["who"] == "张三"
 
 
+def test_main_passes_search_down_options(monkeypatch, capsys) -> None:
+    FakeWeChat.instances.clear()
+    monkeypatch.setattr(cli, "WeChat", FakeWeChat)
+
+    exit_code = cli.main(
+        [
+            "张三",
+            "--search-down-count",
+            "2",
+            "--search-down-interval",
+            "0.1",
+        ]
+    )
+
+    options = FakeWeChat.instances[0].kwargs["search_options"]
+    assert exit_code == 0
+    assert options.search_down_count == 2
+    assert options.search_down_interval == 0.1
+    capsys.readouterr()
+
+
 def test_main_sends_message_when_message_argument_is_present(monkeypatch, capsys) -> None:
     FakeWeChat.instances.clear()
     monkeypatch.setattr(cli, "WeChat", FakeWeChat)

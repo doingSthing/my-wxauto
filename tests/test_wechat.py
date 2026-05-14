@@ -149,6 +149,24 @@ def test_chatwith_can_disable_shortcut() -> None:
     assert keyboard.actions[-1] == ("press", "enter")
 
 
+def test_chatwith_can_move_down_before_opening_search_result() -> None:
+    keyboard = FakeKeyboard()
+    wx = WeChat(
+        window_controller=FakeWindowController(),
+        keyboard=keyboard,
+        search_options=SearchOptions(result_wait=0, search_down_count=2, search_down_interval=0),
+    )
+
+    result = wx.ChatWith("文件传输助手")
+
+    assert result
+    assert keyboard.actions[-3:] == [
+        ("press", "down"),
+        ("press", "down"),
+        ("press", "enter"),
+    ]
+
+
 def test_chatwith_rejects_empty_target() -> None:
     wx = WeChat(window_controller=FakeWindowController(), keyboard=FakeKeyboard())
 

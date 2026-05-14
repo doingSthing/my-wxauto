@@ -34,6 +34,9 @@ class SearchOptions:
     window_ready_timeout: float = 5.0
     shortcut_first_when_recovered: bool = True
     restore_clipboard: bool = True
+    search_down_count: int = 0
+    search_down_interval: float = 0.06
+
 
 
 class WeChat:
@@ -236,6 +239,10 @@ class WeChat:
         )
         wait_seconds = float(force_wait) if force else self.search_options.result_wait
         time.sleep(wait_seconds)
+        down_count = self.search_options.search_down_count
+        for _ in range(down_count):
+            keyboard.press("down")
+            time.sleep(self.search_options.search_down_interval)
         keyboard.press("enter")
         time.sleep(self.search_options.chat_open_wait)
         return window, "window-controller"
@@ -270,7 +277,11 @@ class WeChat:
         self.trace("shortcut_search.after_paste")
         wait_seconds = float(force_wait) if force else self.search_options.result_wait
         time.sleep(wait_seconds)
-        self.trace("shortcut_search.before_enter")
+        down_count = self.search_options.search_down_count
+        for _ in range(down_count):
+            keyboard.press("down")
+            time.sleep(self.search_options.search_down_interval)
+        self.trace("shortcut_search.before_enter", down_count=down_count)
         keyboard.press("enter")
         self.trace("shortcut_search.after_enter")
         time.sleep(self.search_options.chat_open_wait)
