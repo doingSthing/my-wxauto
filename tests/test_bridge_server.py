@@ -17,6 +17,7 @@ from my_wxauto.bridge_server import (
     create_bridge_server,
     run_bridge_server,
 )
+from my_wxauto.bridge_store import BridgeStore
 from my_wxauto.response import WxResponse
 
 
@@ -151,8 +152,8 @@ def test_http_events_endpoint_returns_queued_events() -> None:
     assert runtime.health()["queue_size"] == 1
 
 
-def test_http_events_endpoint_times_out_empty() -> None:
-    runtime = BridgeRuntime(BridgeServerConfig(), wechat=FakeWeChat())
+def test_http_events_endpoint_times_out_empty(tmp_path) -> None:
+    runtime = BridgeRuntime(BridgeServerConfig(store_path=tmp_path / "bridge.sqlite3"), wechat=FakeWeChat())
 
     with RunningServer(runtime) as server:
         status, content_type, payload = server.request("GET", "/events?timeout=0.01&limit=5")
@@ -396,8 +397,8 @@ def test_run_bridge_server_closes_server(monkeypatch) -> None:
     ]
 
 
-def test_runtime_enqueue_and_poll_events() -> None:
-    runtime = BridgeRuntime(BridgeServerConfig(queue_size=2), wechat=FakeWeChat())
+def test_runtime_enqueue_and_poll_events(tmp_path) -> None:
+    runtime = BridgeRuntime(BridgeServerConfig(queue_size=2, store_path=tmp_path / "bridge.sqlite3"), wechat=FakeWeChat())
 
     runtime.enqueue_batch(_batch("one"))
     runtime.enqueue_batch(_batch("two"))
@@ -410,16 +411,16 @@ def test_runtime_enqueue_and_poll_events() -> None:
     assert runtime.health()["queue_size"] == 0
 
 
-def test_runtime_poll_events_times_out_empty() -> None:
-    runtime = BridgeRuntime(BridgeServerConfig(queue_size=2), wechat=FakeWeChat())
+def test_runtime_poll_events_times_out_empty(tmp_path) -> None:
+    runtime = BridgeRuntime(BridgeServerConfig(queue_size=2, store_path=tmp_path / "bridge.sqlite3"), wechat=FakeWeChat())
 
     payload = runtime.poll_events(timeout=0.01, limit=5)
 
     assert payload == {"status": "ok", "count": 0, "events": []}
 
 
-def test_runtime_poll_events_clamps_timeout_and_limit() -> None:
-    runtime = BridgeRuntime(BridgeServerConfig(queue_size=60), wechat=FakeWeChat())
+def test_runtime_poll_events_clamps_timeout_and_limit(tmp_path) -> None:
+    runtime = BridgeRuntime(BridgeServerConfig(queue_size=60, store_path=tmp_path / "bridge.sqlite3"), wechat=FakeWeChat())
     for index in range(55):
         runtime.enqueue_batch(_batch(str(index)))
 
@@ -432,12 +433,65 @@ def test_runtime_poll_events_clamps_timeout_and_limit() -> None:
     assert runtime.health()["queue_size"] == 5
 
 
-def test_runtime_enqueue_raises_when_queue_is_full() -> None:
-    runtime = BridgeRuntime(BridgeServerConfig(queue_size=1), wechat=FakeWeChat())
+def test_runtime_enqueue_raises_when_queue_is_full(tmp_path) -> None:
+    runtime = BridgeRuntime(BridgeServerConfig(queue_size=1, store_path=tmp_path / "bridge.sqlite3"), wechat=FakeWeChat())
     runtime.enqueue_batch(_batch("one"))
 
     with pytest.raises(queue.Full):
         runtime.enqueue_batch(_batch("two"))
+
+
+def test_runtime_enqueue_persists_batch_until_ack_and_complete(tmp_path) -> None:
+    store_path = tmp_path / "bridge.sqlite3"
+    runtime = BridgeRuntime(BridgeServerConfig(store_path=store_path), wechat=FakeWeChat())
+
+    runtime.enqueue_batch(_batch("one"))
+    frozen_row = BridgeStore(store_path).get_batch("batch-one")
+    payload = runtime.poll_events(timeout=0.0, limit=1)
+
+    assert frozen_row is not None
+    assert frozen_row["status"] == "frozen"
+    assert payload["events"][0]["batch_id"] == "batch-one"
+    assert BridgeStore(store_path).get_batch("batch-one")["status"] == "frozen"
+
+    ack_payload = runtime.ack_event("batch-one")
+    assert ack_payload == {"status": "ok", "batch_id": "batch-one", "batch_status": "submitted"}
+    assert BridgeStore(store_path).get_batch("batch-one")["status"] == "submitted"
+
+    complete_payload = runtime.complete_event("batch-one")
+    assert complete_payload == {"status": "ok", "batch_id": "batch-one", "batch_status": "completed"}
+    assert BridgeStore(store_path).get_batch("batch-one")["status"] == "completed"
+
+
+def test_runtime_polls_persisted_pending_batches_after_restart(tmp_path) -> None:
+    store_path = tmp_path / "bridge.sqlite3"
+    store = BridgeStore(store_path)
+    store.save_batch(_batch("persisted"))
+    runtime = BridgeRuntime(BridgeServerConfig(store_path=store_path), wechat=FakeWeChat())
+
+    payload = runtime.poll_events(timeout=0.0, limit=5)
+
+    assert payload["status"] == "ok"
+    assert payload["count"] == 1
+    assert payload["events"][0]["batch_id"] == "batch-persisted"
+
+
+def test_http_ack_and_complete_event_endpoints(tmp_path) -> None:
+    store_path = tmp_path / "bridge.sqlite3"
+    runtime = BridgeRuntime(BridgeServerConfig(store_path=store_path), wechat=FakeWeChat())
+    runtime.enqueue_batch(_batch("one"))
+
+    with RunningServer(runtime) as server:
+        ack_status, ack_content_type, ack_payload = server.request("POST", "/events/batch-one/ack")
+        complete_status, complete_content_type, complete_payload = server.request("POST", "/events/batch-one/complete")
+
+    assert ack_status == 200
+    assert ack_content_type == "application/json; charset=utf-8"
+    assert ack_payload == {"status": "ok", "batch_id": "batch-one", "batch_status": "submitted"}
+    assert complete_status == 200
+    assert complete_content_type == "application/json; charset=utf-8"
+    assert complete_payload == {"status": "ok", "batch_id": "batch-one", "batch_status": "completed"}
+    assert BridgeStore(store_path).get_batch("batch-one")["status"] == "completed"
 
 
 def test_runtime_send_message_uses_ui_lock() -> None:
@@ -493,6 +547,7 @@ def test_runtime_start_listener_passes_config_and_lock(monkeypatch) -> None:
     assert wx.listen_kwargs["resolve_senders"] == "profile_card"
     assert wx.listen_kwargs["sender_resolve_limit"] == 4
     assert wx.listen_kwargs["ui_lock"] is runtime.ui_lock
+    assert wx.listen_kwargs["mark_submitted_on_callback"] is False
 
 
 def test_runtime_start_listener_is_concurrently_idempotent(monkeypatch) -> None:

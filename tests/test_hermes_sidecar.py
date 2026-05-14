@@ -28,6 +28,8 @@ class _FakeBridge:
     def __init__(self, health_payload: dict[str, object] | None = None) -> None:
         self.health_payload = health_payload or {"status": "ok"}
         self.sent: list[tuple[str, str]] = []
+        self.acked: list[str] = []
+        self.completed: list[str] = []
 
     def health(self) -> dict[str, object]:
         return self.health_payload
@@ -35,6 +37,14 @@ class _FakeBridge:
     def send(self, who: str, message: str) -> dict[str, object]:
         self.sent.append((who, message))
         return {"sent": True}
+
+    def ack_event(self, event_id: str) -> dict[str, object]:
+        self.acked.append(event_id)
+        return {"status": "ok", "batch_id": event_id, "batch_status": "submitted"}
+
+    def complete_event(self, event_id: str) -> dict[str, object]:
+        self.completed.append(event_id)
+        return {"status": "ok", "batch_id": event_id, "batch_status": "completed"}
 
 
 class _PollingBridge(_FakeBridge):
@@ -192,6 +202,28 @@ def test_bridge_client_sends_message(monkeypatch: pytest.MonkeyPatch) -> None:
     assert timeout == 60.0
 
 
+def test_bridge_client_acks_and_completes_events(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+
+    def fake_urlopen(req: object, timeout: float) -> _Response:
+        calls.append((req, timeout))
+        return _Response(b'{"status": "ok"}')
+
+    monkeypatch.setattr(hermes_sidecar.request, "urlopen", fake_urlopen)
+
+    client = BridgeClient("http://bridge", timeout=4.0)
+    ack = client.ack_event("batch-1")
+    complete = client.complete_event("batch-1")
+
+    assert ack == {"status": "ok"}
+    assert complete == {"status": "ok"}
+    assert [call[0].full_url for call in calls] == [
+        "http://bridge/events/batch-1/ack",
+        "http://bridge/events/batch-1/complete",
+    ]
+    assert [call[0].get_method() for call in calls] == ["POST", "POST"]
+
+
 def test_bridge_client_rejects_non_object_json(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_urlopen(req: object, timeout: float) -> _Response:
         return _Response(b'[]')
@@ -327,10 +359,12 @@ def test_sidecar_processes_event_and_sends_reply() -> None:
     hermes = _FakeHermes(" hello there \n")
     sidecar = hermes_sidecar.HermesSidecar(hermes_sidecar.SidecarConfig(), bridge=bridge, hermes=hermes)
 
-    result = sidecar.process_event({"chat_name": " Test Chat ", "messages": [{"content": "hi"}]})
+    result = sidecar.process_event({"batch_id": "batch-1", "chat_name": " Test Chat ", "messages": [{"content": "hi"}]})
 
     assert result == "hello there"
     assert bridge.sent == [("Test Chat", "hello there")]
+    assert bridge.acked == ["batch-1"]
+    assert bridge.completed == ["batch-1"]
     assert hermes.calls
     prompt, session_name = hermes.calls[0]
     assert "Test Chat" in prompt
@@ -343,10 +377,12 @@ def test_sidecar_dry_run_does_not_send_reply(capsys: pytest.CaptureFixture[str])
     config = hermes_sidecar.SidecarConfig(dry_run=True)
     sidecar = hermes_sidecar.HermesSidecar(config, bridge=bridge, hermes=hermes)
 
-    result = sidecar.process_event({"chat_name": "Room", "messages": [{"content": "hi"}]})
+    result = sidecar.process_event({"batch_id": "batch-1", "chat_name": "Room", "messages": [{"content": "hi"}]})
 
     assert result == "dry reply"
     assert bridge.sent == []
+    assert bridge.acked == []
+    assert bridge.completed == []
     assert capsys.readouterr().out == "[dry-run] Room: dry reply\n"
 
 
@@ -355,10 +391,12 @@ def test_sidecar_empty_reply_does_not_send() -> None:
     hermes = _FakeHermes(" \n ")
     sidecar = hermes_sidecar.HermesSidecar(hermes_sidecar.SidecarConfig(), bridge=bridge, hermes=hermes)
 
-    result = sidecar.process_event({"chat_name": "Room", "messages": [{"content": "hi"}]})
+    result = sidecar.process_event({"batch_id": "batch-1", "chat_name": "Room", "messages": [{"content": "hi"}]})
 
     assert result is None
     assert bridge.sent == []
+    assert bridge.acked == ["batch-1"]
+    assert bridge.completed == ["batch-1"]
 
 
 def test_sidecar_check_health_rejects_unhealthy_bridge() -> None:

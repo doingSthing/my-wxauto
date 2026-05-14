@@ -7,9 +7,10 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from .bridge_events import ConversationBatch
+from .bridge_store import BridgeStore
 from .wechat import WeChat
 
 
@@ -56,6 +57,7 @@ class BridgeRuntime:
             trace_ui=config.trace_ui,
             bridge_store_path=config.store_path,
         )
+        self.store = BridgeStore(config.store_path)
         self._events: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=config.queue_size)
         self._listener_thread: threading.Thread | None = None
         self._listener_lock = threading.Lock()
@@ -70,23 +72,53 @@ class BridgeRuntime:
         }
 
     def enqueue_batch(self, batch: ConversationBatch) -> None:
+        self.store.save_batch(batch)
         self._events.put_nowait(batch.to_event_dict())
 
     def poll_events(self, *, timeout: float = 30.0, limit: int = 5) -> dict[str, Any]:
         timeout = _clamp_float(timeout, minimum=0.0, maximum=120.0, default=30.0)
         limit = _clamp_int(limit, minimum=1, maximum=50, default=5)
         events: list[dict[str, Any]] = []
+        seen_batch_ids: set[str] = set()
+
+        def add_event(event: dict[str, Any]) -> None:
+            batch_id = str(event.get("batch_id") or event.get("event_id") or "")
+            if batch_id and batch_id in seen_batch_ids:
+                return
+            if batch_id:
+                seen_batch_ids.add(batch_id)
+            events.append(event)
+
+        while len(events) < limit:
+            try:
+                add_event(self._events.get_nowait())
+            except queue.Empty:
+                break
+
+        self._append_persisted_pending_events(events, seen_batch_ids, limit=limit)
+        if events:
+            return {"status": "ok", "count": len(events), "events": events}
+
         try:
-            events.append(self._events.get(timeout=timeout))
+            add_event(self._events.get(timeout=timeout))
         except queue.Empty:
             return {"status": "ok", "count": 0, "events": []}
 
         while len(events) < limit:
             try:
-                events.append(self._events.get_nowait())
+                add_event(self._events.get_nowait())
             except queue.Empty:
                 break
+        self._append_persisted_pending_events(events, seen_batch_ids, limit=limit)
         return {"status": "ok", "count": len(events), "events": events}
+
+    def ack_event(self, batch_id: str) -> dict[str, Any]:
+        self.store.mark_batch_submitted(batch_id)
+        return {"status": "ok", "batch_id": batch_id, "batch_status": "submitted"}
+
+    def complete_event(self, batch_id: str) -> dict[str, Any]:
+        self.store.mark_batch_completed(batch_id)
+        return {"status": "ok", "batch_id": batch_id, "batch_status": "completed"}
 
     def send_message(self, who: str, message: str) -> dict[str, Any]:
         with self.ui_lock:
@@ -109,7 +141,28 @@ class BridgeRuntime:
             resolve_senders=self.config.resolve_senders,
             sender_resolve_limit=self.config.sender_resolve_limit,
             ui_lock=self.ui_lock,
+            mark_submitted_on_callback=False,
         )
+
+    def _append_persisted_pending_events(
+        self,
+        events: list[dict[str, Any]],
+        seen_batch_ids: set[str],
+        *,
+        limit: int,
+    ) -> None:
+        if len(events) >= limit:
+            return
+        for status in ("frozen", "submitted"):
+            for row in self.store.list_batches(status=status):
+                if len(events) >= limit:
+                    return
+                batch_id = str(row["batch_id"])
+                if batch_id in seen_batch_ids:
+                    continue
+                payload = json.loads(row["payload_json"])
+                seen_batch_ids.add(batch_id)
+                events.append(payload)
 
 
 class BridgeHTTPServer(ThreadingHTTPServer):
@@ -148,6 +201,18 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed_url = urlparse(self.path)
+        event_action = _event_action_from_path(parsed_url.path)
+        if event_action is not None:
+            batch_id, action = event_action
+            try:
+                if action == "ack":
+                    self._send_json(200, self.server.runtime.ack_event(batch_id))
+                else:
+                    self._send_json(200, self.server.runtime.complete_event(batch_id))
+            except KeyError:
+                self._send_json(404, {"status": "error", "message": f"batch not found: {batch_id}"})
+            return
+
         if parsed_url.path != "/send":
             self._send_json(404, {"status": "error", "message": "not found"})
             return
@@ -248,3 +313,10 @@ def _clamp_int(value: object, *, minimum: int, maximum: int, default: int) -> in
     except (TypeError, ValueError):
         return default
     return max(minimum, min(maximum, parsed))
+
+
+def _event_action_from_path(path: str) -> tuple[str, str] | None:
+    parts = [unquote(part) for part in path.split("/") if part]
+    if len(parts) != 3 or parts[0] != "events" or parts[2] not in {"ack", "complete"}:
+        return None
+    return parts[1], parts[2]

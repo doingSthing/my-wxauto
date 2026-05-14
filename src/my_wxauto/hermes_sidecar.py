@@ -55,6 +55,12 @@ class BridgeClient:
             timeout=max(self.timeout, 60.0),
         )
 
+    def ack_event(self, event_id: str) -> dict[str, Any]:
+        return self._request_json("POST", f"{self.base_url}/events/{parse.quote(event_id, safe='')}/ack")
+
+    def complete_event(self, event_id: str) -> dict[str, Any]:
+        return self._request_json("POST", f"{self.base_url}/events/{parse.quote(event_id, safe='')}/complete")
+
     def _request_json(
         self,
         method: str,
@@ -82,6 +88,12 @@ class BridgeLike(Protocol):
         ...
 
     def send(self, who: str, message: str) -> dict[str, Any]:
+        ...
+
+    def ack_event(self, event_id: str) -> dict[str, Any]:
+        ...
+
+    def complete_event(self, event_id: str) -> dict[str, Any]:
         ...
 
 
@@ -230,10 +242,17 @@ class HermesSidecar:
         return payload
 
     def process_event(self, event: dict[str, Any]) -> str | None:
+        event_id = _event_id(event)
+        should_commit = bool(event_id) and not self.config.dry_run
         chat_name = _normalize_text(event.get("chat_name")).strip()
         if not chat_name:
+            if should_commit:
+                self.bridge.ack_event(event_id)
+                self.bridge.complete_event(event_id)
             return None
 
+        if should_commit:
+            self.bridge.ack_event(event_id)
         prompt = format_prompt(event)
         if self.config.debug:
             print(f"[debug] === Hermes prompt for [{chat_name}] ===")
@@ -245,6 +264,8 @@ class HermesSidecar:
         if not reply:
             if self.config.debug:
                 print(f"[debug] empty reply for [{chat_name}], skipping send")
+            if should_commit:
+                self.bridge.complete_event(event_id)
             return None
 
         if self.config.debug:
@@ -261,6 +282,8 @@ class HermesSidecar:
             return reply
 
         self.bridge.send(chat_name, reply)
+        if should_commit:
+            self.bridge.complete_event(event_id)
         return reply
 
     def run(self) -> None:
@@ -327,6 +350,10 @@ def format_prompt(event: dict[str, Any]) -> str:
     lines.append("")
     lines.append("请只输出要发送到微信的回复文本。不要解释，不要包含前后缀。")
     return "\n".join(lines)
+
+
+def _event_id(event: dict[str, Any]) -> str:
+    return _normalize_text(event.get("batch_id") or event.get("event_id")).strip()
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -187,6 +187,7 @@ def listen_conversation_batches(
     profile_card_timeout: float = 2.0,
     sender_progress: Callable[[dict[str, Any]], None] | None = None,
     ui_lock: Any | None = None,
+    mark_submitted_on_callback: bool = True,
 ) -> ListenerStats:
     """Listen for unread chats and synchronously deliver frozen batches.
 
@@ -227,7 +228,8 @@ def listen_conversation_batches(
 
         for batch in batcher.frozen_batches(limit=remaining):
             callback(batch)
-            store.mark_batch_submitted(batch.batch_id, submitted_at=time.time())
+            if mark_submitted_on_callback:
+                store.mark_batch_submitted(batch.batch_id, submitted_at=time.time())
             event_count += 1
             if max_events > 0 and event_count >= max_events:
                 stopped_reason = "max_events"
@@ -238,7 +240,8 @@ def listen_conversation_batches(
             return
         for batch in batcher.freeze_due_batches(now=now, limit=remaining):
             callback(batch)
-            store.mark_batch_submitted(batch.batch_id, submitted_at=time.time())
+            if mark_submitted_on_callback:
+                store.mark_batch_submitted(batch.batch_id, submitted_at=time.time())
             event_count += 1
             if max_events > 0 and event_count >= max_events:
                 stopped_reason = "max_events"

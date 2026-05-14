@@ -94,6 +94,8 @@ HTTP API：
 ```text
 GET  http://127.0.0.1:8765/health
 GET  http://127.0.0.1:8765/events?timeout=30&limit=5
+POST http://127.0.0.1:8765/events/{batch_id}/ack
+POST http://127.0.0.1:8765/events/{batch_id}/complete
 POST http://127.0.0.1:8765/send
 ```
 
@@ -104,6 +106,14 @@ POST http://127.0.0.1:8765/send
 ```
 
 默认一次最多处理 5 个未读会话，桥接队列默认最多 100 条事件。`/events` 返回的每个 event 都只属于一个微信会话，外部机器人应逐会话处理，不要把多个会话混进同一个模型请求。
+
+事件生命周期：
+
+- `frozen`：监听器已生成会话批次，等待外部机器人确认处理。
+- `submitted`：外部机器人已通过 `/events/{batch_id}/ack` 确认开始处理。
+- `completed`：外部机器人已完成处理，并通过 `/events/{batch_id}/complete` 确认。
+
+`/events` 会返回尚未完成的 `frozen` 或 `submitted` 事件，但不会改变事件状态。外部机器人开始处理前应调用 `ack`，发送回复成功后应调用 `complete`，否则该事件会保留为可重试状态。sidecar 的 `--dry-run` 模式不会调用 `ack` 或 `complete`。
 
 ## Hermes Sidecar Adapter
 
