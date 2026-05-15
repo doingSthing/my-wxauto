@@ -1,15 +1,23 @@
-# my-wxauto
+# hermes-wxauto
 
-`my-wxauto` 是一个面向新版 Windows 微信客户端的自动化兼容层。当前目标是给微信机器人提供基础能力：打开会话、发送消息、监听未读消息，并通过本地 HTTP 桥接服务接入 Hermes/OpenClaw 等外部机器人。
+`hermes-wxauto` 是一个面向新版 Windows 微信客户端的自动化兼容层。当前目标是给微信机器人提供基础能力：打开会话、发送消息、监听未读消息，并通过本地 HTTP 桥接服务接入 Hermes/OpenClaw 等外部机器人。
 
 ## 快速开始
 
 在项目根目录运行。下面几个命令是日常测试最常用的入口。
 
+说明：当前 Python 包名仍是 `my_wxauto`，所以源码目录下继续使用 `python -m my_wxauto ...`。安装为命令行工具后，也可以使用 `hermes-wxauto ...`。
+
 打开一个联系人或群聊：
 
 ```powershell
 python -m my_wxauto "张三"
+```
+
+安装后等价命令：
+
+```powershell
+hermes-wxauto "张三"
 ```
 
 发送一条消息：

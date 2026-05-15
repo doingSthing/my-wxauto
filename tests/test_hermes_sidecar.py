@@ -494,7 +494,7 @@ def test_sidecar_run_once_logs_and_sleeps_on_bridge_error(
     sidecar.run()
 
     assert sleeps == [1.25]
-    assert capsys.readouterr().out == "[my-wxauto hermes-sidecar] error: boom\n"
+    assert capsys.readouterr().out == "[hermes-wxauto hermes-sidecar] error: boom\n"
 
 
 def test_main_builds_sidecar_config(monkeypatch: pytest.MonkeyPatch) -> None:

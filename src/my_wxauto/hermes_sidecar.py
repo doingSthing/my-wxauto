@@ -303,13 +303,13 @@ class HermesSidecar:
             except (urlerror.URLError, TimeoutError, BridgeRequestError, subprocess.SubprocessError) as exc:
                 if isinstance(exc, subprocess.CalledProcessError):
                     cmd = getattr(exc, "cmd", None) or []
-                    print(f"[my-wxauto hermes-sidecar] hermes exited with code {exc.returncode}")
+                    print(f"[hermes-wxauto hermes-sidecar] hermes exited with code {exc.returncode}")
                     if exc.stderr:
-                        print(f"[my-wxauto hermes-sidecar] stderr: {exc.stderr.strip()}")
+                        print(f"[hermes-wxauto hermes-sidecar] stderr: {exc.stderr.strip()}")
                     if exc.stdout:
-                        print(f"[my-wxauto hermes-sidecar] stdout: {exc.stdout.strip()}")
+                        print(f"[hermes-wxauto hermes-sidecar] stdout: {exc.stdout.strip()}")
                 else:
-                    print(f"[my-wxauto hermes-sidecar] error: {exc}")
+                    print(f"[hermes-wxauto hermes-sidecar] error: {exc}")
                 time.sleep(self.config.retry_delay)
 
             if self.config.once:
