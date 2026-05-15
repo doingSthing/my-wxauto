@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest --collect-only)",
+      "Bash(python -m pytest --tb=no -q)",
+      "Bash(python -m pytest --collect-only -q)",
+      "Bash(.venv/Scripts/python.exe -m pytest --collect-only -q)",
+      "Read(//c/Users/张勋/.hermes/**)",
+      "Read(//c/Users/张勋/.config/**)",
+      "Read(//c/Users/张勋/**)",
+      "Read(//mnt/c/Users/张勋/**)",
+      "Bash(find /mnt/wsl* -maxdepth 3 -iname \"*hermes*\")",
+      "Bash(find /home -maxdepth 3 -iname \"*hermes*\")",
+      "Bash(find /opt -maxdepth 2 -iname \"*hermes*\")",
+      "Read(//usr/local/**)",
+      "Read(//f/ai-work/2026-4-28/hermes-agent/**)",
+      "Read(//f/ai-work/2026-4/**)",
+      "Bash(ls -la \"F:\\\\\\\\ai-work\\\\\\\\2026-4-28\\\\\\\\my-wxauto\\\\\\\\hermes-agent\")",
+      "Bash(ls *)",
+      "Bash(find *)",
+      "Bash(dir \"C:\\\\\\\\Users\\\\\\\\张勋\\\\\\\\\" /b)",
+      "Bash(findstr /i hermes)",
+      "Bash(wsl.exe bash *)"
+    ]
+  }
+}
